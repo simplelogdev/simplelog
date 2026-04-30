@@ -96,20 +96,30 @@ except ImportError:
 
 import azure_utils
 import cloudwatch
+import datadog_utils
 import docker_utils
+import elastic_utils
+import flyio_utils
 import gcp_utils
+import kubernetes_utils
 import loki_utils
 import profiles_store
+import railway_utils
 import ssh_utils
 import vercel_utils
 from workers import (
     AzureWorker,
+    DatadogWorker,
     DockerComposeWorker,
     DockerContainerWorker,
     DockerExecFileWorker,
+    ElasticWorker,
     FileWorker,
+    FlyioWorker,
     GCPWorker,
+    KubernetesWorker,
     LokiWorker,
+    RailwayWorker,
     SSHWorker,
     StdinWorker,
     TailWorker,
@@ -187,6 +197,41 @@ _SVG_AZURE = (
 _SVG_LOKI = (
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">'
     '<path fill="{color}" d="M4 5h2v14H4V5zM8 6h12v2H8V6zM8 11h9v2H8v-2zM8 16h12v2H8v-2z"/>'
+    "</svg>"
+)
+
+_SVG_DATADOG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">'
+    '<path fill="{color}" d="M12 2l8.5 4.9v10.2L12 22l-8.5-4.9V6.9L12 2z"/>'
+    "</svg>"
+)
+
+_SVG_ELASTIC = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">'
+    '<path fill="{color}" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z'
+    'm1 15H7v-2h6v2zm4-4H7V9h10v2z"/>'
+    "</svg>"
+)
+
+_SVG_RAILWAY = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">'
+    '<path fill="{color}" d="M4 16h16v2H4v-2zM4 6h16v2H4V6zm4 5h8v2H8v-2z'
+    'M6 19l-2 3h2l1-1.5L8 22h2l-2-3H6zm10 0l-2 3h2l1-1.5 1 1.5h2l-2-3h-2z"/>'
+    "</svg>"
+)
+
+_SVG_FLYIO = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">'
+    '<path fill="{color}" d="M12 2C8.13 2 5 5.13 5 9c0 2.74 1.54 5.12 3.82 6.38'
+    'L8 20h2l.5-3h3l.5 3h2l-.82-4.62C17.46 14.12 19 11.74 19 9c0-3.87-3.13-7-7-7z'
+    'm0 2c2.76 0 5 2.24 5 5s-2.24 5-5 5-5-2.24-5-5 2.24-5 5-5z"/>'
+    "</svg>"
+)
+
+_SVG_KUBERNETES = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">'
+    '<path fill="{color}" d="M12 2l9 4.5v9L12 20l-9-4.5v-9L12 2zm0 2.18L5 7.64v8.72'
+    'L12 19.82l7-3.46V7.64L12 4.18zm-1 3.32h2v5l-1 1-1-1V7.5zm0 7h2v2h-2v-2z"/>'
     "</svg>"
 )
 
@@ -860,15 +905,19 @@ def _ghost_btn(text: str = "") -> QPushButton:
     btn.setStyleSheet(f"""
         QPushButton {{
             background: transparent;
-            color: {C_MUTED};
-            border: 1px solid rgba(255,255,255,18);
+            color: {C_TEXT};
+            border: 1px solid rgba(255,255,255,35);
             border-radius: 6px;
             padding: 7px 14px;
             font-size: 12px;
         }}
         QPushButton:hover {{
             background: rgba(255,255,255,10);
-            color: {C_TEXT};
+            border-color: rgba(255,255,255,60);
+        }}
+        QPushButton:disabled {{
+            color: {C_MUTED};
+            border-color: rgba(255,255,255,15);
         }}
     """)
     return btn
@@ -876,13 +925,15 @@ def _ghost_btn(text: str = "") -> QPushButton:
 
 class _ProfileBar(QWidget):
     """Compact saved-profile row: [combo ▾] [Load] [✕]
-    Hidden automatically when no profiles are saved."""
+    Hidden automatically when no profiles are saved.
+    Pass wrapper= to also show/hide an outer container."""
 
     profile_loaded = pyqtSignal(dict)
 
-    def __init__(self, service: str, parent=None) -> None:
+    def __init__(self, service: str, wrapper: QWidget | None = None, parent=None) -> None:
         super().__init__(parent)
         self._service = service
+        self._wrapper = wrapper
 
         lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -896,7 +947,7 @@ class _ProfileBar(QWidget):
             f"border-radius: 4px; padding: 3px 6px; font-size: 11px;"
         )
 
-        self._load_btn = QPushButton("Load")
+        self._load_btn = QPushButton(i18n.tr("remote_open"))
         self._load_btn.setFixedWidth(48)
         self._load_btn.setStyleSheet(
             f"QPushButton {{ background: transparent; color: {C_ACCENT}; border: 1px solid {C_ACCENT};"
@@ -924,7 +975,10 @@ class _ProfileBar(QWidget):
         self._combo.clear()
         for p in profiles_store.load_all(self._service):
             self._combo.addItem(p["name"], userData=p)
-        self.setVisible(self._combo.count() > 0)
+        vis = self._combo.count() > 0
+        self.setVisible(vis)
+        if self._wrapper is not None:
+            self._wrapper.setVisible(vis)
 
     def _on_load(self) -> None:
         p = self._combo.currentData()
@@ -1092,12 +1146,16 @@ class CloudWatchPanel(QWidget):
         )
         vbox.addWidget(self._title_lbl)
 
-        # ── Connection card ───────────────────────────────────────────────────
-        card, cl, self._lbl_connection = make_card(i18n.tr("cw_card_connection"))
-
-        self._cw_profile_bar = _ProfileBar("cloudwatch")
+        # ── Saved configs card ────────────────────────────────────────────────
+        saved_card_cw, saved_lay_cw, _ = make_card(i18n.tr("saved_configs"))
+        self._cw_profile_bar = _ProfileBar("cloudwatch", wrapper=saved_card_cw)
         self._cw_profile_bar.profile_loaded.connect(self._load_cw_profile)
-        cl.addWidget(self._cw_profile_bar)
+        saved_lay_cw.addWidget(self._cw_profile_bar)
+        vbox.addWidget(saved_card_cw)
+
+        # ── Connection card ───────────────────────────────────────────────────
+        card, cl, self._lbl_connection = make_card(i18n.tr("new_config"))
+        self._connection_card_lay = cl
 
         self._lbl_auth_mode = _field_label("")
         self._auth_mode_combo = QComboBox()
@@ -1696,13 +1754,16 @@ class SSHPanel(QWidget):
         )
         vbox.addWidget(self._title_lbl)
 
-        # ── CONNECTION card ───────────────────────────────────────────────────
-        card, cl, self._lbl_conn = make_card()
-        vbox.addWidget(card)
-
-        self._ssh_profile_bar = _ProfileBar("ssh")
+        # ── Saved configs card ────────────────────────────────────────────────
+        saved_card_ssh, saved_lay_ssh, _ = make_card(i18n.tr("saved_configs"))
+        self._ssh_profile_bar = _ProfileBar("ssh", wrapper=saved_card_ssh)
         self._ssh_profile_bar.profile_loaded.connect(self._load_ssh_profile)
-        cl.addWidget(self._ssh_profile_bar)
+        saved_lay_ssh.addWidget(self._ssh_profile_bar)
+        vbox.addWidget(saved_card_ssh)
+
+        # ── CONNECTION card ───────────────────────────────────────────────────
+        card, cl, self._lbl_conn = make_card(i18n.tr("new_config"))
+        vbox.addWidget(card)
 
         # Host
         self._lbl_host = QLabel()
@@ -2519,12 +2580,15 @@ class VercelPanel(QWidget):
         vlay.setContentsMargins(12, 12, 12, 12)
         vlay.setSpacing(10)
 
-        # ── Card: API Token ──────────────────────────────────────────
-        card_tok, lay_tok, _ = make_card(i18n.tr("vercel_card_token"))
-
-        self._vercel_profile_bar = _ProfileBar("vercel")
+        # ── Saved configs card ────────────────────────────────────────
+        saved_card_v, saved_lay_v, _ = make_card(i18n.tr("saved_configs"))
+        self._vercel_profile_bar = _ProfileBar("vercel", wrapper=saved_card_v)
         self._vercel_profile_bar.profile_loaded.connect(self._load_vercel_profile)
-        lay_tok.addWidget(self._vercel_profile_bar)
+        saved_lay_v.addWidget(self._vercel_profile_bar)
+        vlay.addWidget(saved_card_v)
+
+        # ── Card: API Token ──────────────────────────────────────────
+        card_tok, lay_tok, _ = make_card(i18n.tr("new_config"))
 
         self._token_input = QLineEdit()
         self._token_input.setPlaceholderText(i18n.tr("vercel_field_token"))
@@ -2847,12 +2911,15 @@ class GCPPanel(QWidget):
         )
         lbl_style = f"color: {C_MUTED}; font-size: 11px;"
 
-        # ── Card: Auth ───────────────────────────────────────────────
-        card_auth, lay_auth, _ = make_card(i18n.tr("gcp_card_auth"))
-
-        self._gcp_profile_bar = _ProfileBar("gcp")
+        # ── Saved configs card ────────────────────────────────────────
+        saved_card_gcp, saved_lay_gcp, _ = make_card(i18n.tr("saved_configs"))
+        self._gcp_profile_bar = _ProfileBar("gcp", wrapper=saved_card_gcp)
         self._gcp_profile_bar.profile_loaded.connect(self._load_gcp_profile)
-        lay_auth.addWidget(self._gcp_profile_bar)
+        saved_lay_gcp.addWidget(self._gcp_profile_bar)
+        vlay.addWidget(saved_card_gcp)
+
+        # ── Card: Auth ───────────────────────────────────────────────
+        card_auth, lay_auth, _ = make_card(i18n.tr("new_config"))
 
         self._auth_combo = QComboBox()
         self._auth_combo.addItems([i18n.tr("gcp_auth_adc"), i18n.tr("gcp_auth_sa")])
@@ -3157,12 +3224,15 @@ class AzurePanel(QWidget):
         )
         lbl_style = f"color: {C_MUTED}; font-size: 11px;"
 
-        # ── Card: Auth ───────────────────────────────────────────────
-        card_auth, lay_auth, _ = make_card(i18n.tr("azure_card_auth"))
-
-        self._az_profile_bar = _ProfileBar("azure")
+        # ── Saved configs card ────────────────────────────────────────
+        saved_card_az, saved_lay_az, _ = make_card(i18n.tr("saved_configs"))
+        self._az_profile_bar = _ProfileBar("azure", wrapper=saved_card_az)
         self._az_profile_bar.profile_loaded.connect(self._load_az_profile)
-        lay_auth.addWidget(self._az_profile_bar)
+        saved_lay_az.addWidget(self._az_profile_bar)
+        vlay.addWidget(saved_card_az)
+
+        # ── Card: Auth ───────────────────────────────────────────────
+        card_auth, lay_auth, _ = make_card(i18n.tr("new_config"))
 
         for attr, key, pw in [
             ("_tenant_input",    "azure_field_tenant",    False),
@@ -3512,12 +3582,15 @@ class LokiPanel(QWidget):
         )
         lbl_style = f"color: {C_MUTED}; font-size: 11px;"
 
-        # ── Card: Connection ─────────────────────────────────────────
-        card_conn, lay_conn, _ = make_card(i18n.tr("loki_card_auth"))
-
-        self._loki_profile_bar = _ProfileBar("loki")
+        # ── Saved configs card ────────────────────────────────────────
+        saved_card_loki, saved_lay_loki, _ = make_card(i18n.tr("saved_configs"))
+        self._loki_profile_bar = _ProfileBar("loki", wrapper=saved_card_loki)
         self._loki_profile_bar.profile_loaded.connect(self._load_loki_profile)
-        lay_conn.addWidget(self._loki_profile_bar)
+        saved_lay_loki.addWidget(self._loki_profile_bar)
+        vlay.addWidget(saved_card_loki)
+
+        # ── Card: Connection ─────────────────────────────────────────
+        card_conn, lay_conn, _ = make_card(i18n.tr("new_config"))
 
         lay_conn.addWidget(self._lbl(lbl_style, i18n.tr("loki_field_url")))
         self._url_input = QLineEdit()
@@ -3750,6 +3823,1200 @@ class LokiPanel(QWidget):
         self.open_tab.emit(cfg, self._open_mode_loki.get_mode())
 
 
+# ── DatadogPanel ──────────────────────────────────────────────────────────────
+
+class _DatadogConnectWorker(QThread):
+    success = pyqtSignal()
+    failure = pyqtSignal(str)
+
+    def __init__(self, base_url: str, api_key: str, app_key: str) -> None:
+        super().__init__()
+        self._base_url = base_url
+        self._api_key  = api_key
+        self._app_key  = app_key
+
+    def run(self) -> None:
+        try:
+            datadog_utils.verify_connection(self._base_url, self._api_key, self._app_key)
+            self.success.emit()
+        except RuntimeError as e:
+            self.failure.emit(str(e))
+
+
+class DatadogPanel(QWidget):
+    open_tab = pyqtSignal(dict, str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._connected = False
+        self._connect_worker: _DatadogConnectWorker | None = None
+        self._build_ui()
+
+    def _build_ui(self) -> None:
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setStyleSheet("background: transparent; border: none;")
+        root.addWidget(scroll)
+
+        inner = QWidget()
+        inner.setStyleSheet(f"background: {C_PANEL};")
+        scroll.setWidget(inner)
+
+        vlay = QVBoxLayout(inner)
+        vlay.setContentsMargins(12, 12, 12, 12)
+        vlay.setSpacing(10)
+
+        field_style = (
+            f"background: {C_BG}; color: {C_TEXT}; border: 1px solid {C_BORDER};"
+            f"border-radius: 4px; padding: 6px 8px; font-size: 12px;"
+        )
+        lbl_style = f"color: {C_MUTED}; font-size: 11px;"
+
+        # ── Saved configs card ────────────────────────────────────────
+        saved_card_dd, saved_lay_dd, _ = make_card(i18n.tr("saved_configs"))
+        self._dd_profile_bar = _ProfileBar("datadog", wrapper=saved_card_dd)
+        self._dd_profile_bar.profile_loaded.connect(self._load_datadog_profile)
+        saved_lay_dd.addWidget(self._dd_profile_bar)
+        vlay.addWidget(saved_card_dd)
+
+        # ── Card: Auth ───────────────────────────────────────────────
+        card_auth, lay_auth, _ = make_card(i18n.tr("new_config"))
+
+        lay_auth.addWidget(self._lbl(lbl_style, i18n.tr("datadog_field_site")))
+        self._site_combo = QComboBox()
+        self._site_combo.addItems(list(datadog_utils.DD_SITES.keys()))
+        self._site_combo.setStyleSheet(
+            f"background: {C_BG}; color: {C_TEXT}; border: 1px solid {C_BORDER};"
+            f"border-radius: 4px; padding: 4px 8px; font-size: 12px;"
+        )
+        lay_auth.addWidget(self._site_combo)
+
+        lay_auth.addWidget(self._lbl(lbl_style, i18n.tr("datadog_field_api_key")))
+        self._api_key_input = QLineEdit()
+        self._api_key_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self._api_key_input.setStyleSheet(field_style)
+        lay_auth.addWidget(self._api_key_input)
+
+        lay_auth.addWidget(self._lbl(lbl_style, i18n.tr("datadog_field_app_key")))
+        self._app_key_input = QLineEdit()
+        self._app_key_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self._app_key_input.setStyleSheet(field_style)
+        lay_auth.addWidget(self._app_key_input)
+
+        self._save_profile_btn_dd = _ghost_btn("Save as profile…")
+        self._save_profile_btn_dd.clicked.connect(self._on_save_datadog_profile)
+        self._save_profile_btn_dd.setEnabled(False)
+        lay_auth.addWidget(self._save_profile_btn_dd)
+
+        self._connect_btn_dd = _primary_btn(i18n.tr("datadog_connect"))
+        self._connect_btn_dd.clicked.connect(self._do_connect)
+        lay_auth.addWidget(self._connect_btn_dd)
+
+        self._auth_status_dd = QLabel("")
+        self._auth_status_dd.setStyleSheet(lbl_style)
+        self._auth_status_dd.setWordWrap(True)
+        lay_auth.addWidget(self._auth_status_dd)
+
+        vlay.addWidget(card_auth)
+
+        # ── Card: Query ──────────────────────────────────────────────
+        card_query, lay_query, _ = make_card(i18n.tr("datadog_card_query"))
+
+        lay_query.addWidget(self._lbl(lbl_style, i18n.tr("datadog_field_query")))
+        self._dd_query_input = QLineEdit()
+        self._dd_query_input.setPlaceholderText(i18n.tr("datadog_query_hint"))
+        self._dd_query_input.setStyleSheet(field_style)
+        self._dd_query_input.textChanged.connect(self._update_open_btn)
+        lay_query.addWidget(self._dd_query_input)
+
+        lb_row = QHBoxLayout()
+        lb_row.addWidget(self._lbl(lbl_style, i18n.tr("datadog_field_lookback")))
+        lb_row.addStretch()
+        self._lookback_spin_dd = QSpinBox()
+        self._lookback_spin_dd.setRange(1, 168)
+        self._lookback_spin_dd.setValue(1)
+        self._lookback_spin_dd.setStyleSheet(
+            f"background: {C_BG}; color: {C_TEXT}; border: 1px solid {C_BORDER};"
+            f"border-radius: 4px; padding: 4px; font-size: 12px; max-width: 60px;"
+        )
+        lb_row.addWidget(self._lookback_spin_dd)
+        lay_query.addLayout(lb_row)
+
+        iv_row = QHBoxLayout()
+        iv_row.addWidget(self._lbl(lbl_style, i18n.tr("datadog_field_interval")))
+        iv_row.addStretch()
+        self._interval_spin_dd = QSpinBox()
+        self._interval_spin_dd.setRange(1, 60)
+        self._interval_spin_dd.setValue(10)
+        self._interval_spin_dd.setStyleSheet(
+            f"background: {C_BG}; color: {C_TEXT}; border: 1px solid {C_BORDER};"
+            f"border-radius: 4px; padding: 4px; font-size: 12px; max-width: 60px;"
+        )
+        iv_row.addWidget(self._interval_spin_dd)
+        lay_query.addLayout(iv_row)
+
+        self._open_mode_dd = OpenModeWidget()
+        lay_query.addWidget(self._open_mode_dd)
+
+        self._open_btn_dd = _primary_btn(i18n.tr("datadog_open"))
+        self._open_btn_dd.clicked.connect(self._on_open)
+        self._open_btn_dd.setEnabled(False)
+        lay_query.addWidget(self._open_btn_dd)
+
+        self._card_query_dd = card_query
+        card_query.setVisible(False)
+        vlay.addWidget(card_query)
+        vlay.addStretch()
+
+    @staticmethod
+    def _lbl(style: str, text: str) -> QLabel:
+        lbl = QLabel(text)
+        lbl.setStyleSheet(style)
+        return lbl
+
+    def _update_open_btn(self) -> None:
+        self._open_btn_dd.setEnabled(
+            bool(self._dd_query_input.text().strip()) and self._connected
+        )
+
+    def _do_connect(self) -> None:
+        site_name = self._site_combo.currentText()
+        base_url  = datadog_utils.DD_SITES.get(site_name, "https://api.datadoghq.com")
+        api_key   = self._api_key_input.text().strip()
+        app_key   = self._app_key_input.text().strip()
+        if not api_key or not app_key:
+            self._auth_status_dd.setText("API Key and App Key are required")
+            self._auth_status_dd.setStyleSheet(f"color: {C_ERR}; font-size: 11px;")
+            return
+        self._connect_btn_dd.setEnabled(False)
+        self._auth_status_dd.setText(i18n.tr("datadog_connecting"))
+        self._auth_status_dd.setStyleSheet(f"color: {C_MUTED}; font-size: 11px;")
+        self._connect_worker = _DatadogConnectWorker(base_url, api_key, app_key)
+        self._connect_worker.success.connect(self._on_connected)
+        self._connect_worker.failure.connect(self._on_connect_fail_dd)
+        self._connect_worker.start()
+
+    def _on_connected(self) -> None:
+        self._connected = True
+        self._auth_status_dd.setText(i18n.tr("datadog_connected"))
+        self._auth_status_dd.setStyleSheet(f"color: {C_INFO}; font-size: 11px;")
+        self._connect_btn_dd.setEnabled(True)
+        self._save_profile_btn_dd.setEnabled(True)
+        self._card_query_dd.setVisible(True)
+        self._update_open_btn()
+
+    def _on_connect_fail_dd(self, msg: str) -> None:
+        self._auth_status_dd.setText(msg)
+        self._auth_status_dd.setStyleSheet(f"color: {C_ERR}; font-size: 11px;")
+        self._connect_btn_dd.setEnabled(True)
+
+    def _load_datadog_profile(self, p: dict) -> None:
+        site_name = p.get("site", "US1 (datadoghq.com)")
+        idx = self._site_combo.findText(site_name)
+        if idx >= 0:
+            self._site_combo.setCurrentIndex(idx)
+        self._api_key_input.setText(p.get("api_key", ""))
+        self._app_key_input.setText(p.get("app_key", ""))
+
+    def _on_save_datadog_profile(self) -> None:
+        name, ok = QInputDialog.getText(self, "Save profile", "Profile name:", text="datadog")
+        if not ok or not name.strip():
+            return
+        profiles_store.upsert("datadog", name.strip(), {
+            "site":    self._site_combo.currentText(),
+            "api_key": self._api_key_input.text().strip(),
+            "app_key": self._app_key_input.text().strip(),
+        })
+        self._dd_profile_bar.reload()
+
+    def _on_open(self) -> None:
+        site_name = self._site_combo.currentText()
+        base_url  = datadog_utils.DD_SITES.get(site_name, "https://api.datadoghq.com")
+        query = self._dd_query_input.text().strip() or "*"
+        cfg = {
+            "type":          "datadog",
+            "base_url":      base_url,
+            "query":         query,
+            "api_key":       self._api_key_input.text().strip(),
+            "app_key":       self._app_key_input.text().strip(),
+            "lookback_hours": self._lookback_spin_dd.value(),
+            "interval_s":    self._interval_spin_dd.value(),
+            "label":         site_name.split(" ")[0],
+        }
+        self.open_tab.emit(cfg, self._open_mode_dd.get_mode())
+
+
+# ── ElasticPanel ──────────────────────────────────────────────────────────────
+
+class _ElasticConnectWorker(QThread):
+    success = pyqtSignal(list)   # index names
+    failure = pyqtSignal(str)
+
+    def __init__(self, url: str, api_key: str, username: str, password: str) -> None:
+        super().__init__()
+        self._url      = url
+        self._api_key  = api_key
+        self._username = username
+        self._password = password
+
+    def run(self) -> None:
+        try:
+            elastic_utils.verify_connection(self._url, self._api_key, self._username, self._password)
+            indices = elastic_utils.list_indices(self._url, self._api_key, self._username, self._password)
+            self.success.emit(indices)
+        except RuntimeError as e:
+            self.failure.emit(str(e))
+
+
+class ElasticPanel(QWidget):
+    open_tab = pyqtSignal(dict, str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._connect_worker: _ElasticConnectWorker | None = None
+        self._build_ui()
+
+    def _build_ui(self) -> None:
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setStyleSheet("background: transparent; border: none;")
+        root.addWidget(scroll)
+
+        inner = QWidget()
+        inner.setStyleSheet(f"background: {C_PANEL};")
+        scroll.setWidget(inner)
+
+        vlay = QVBoxLayout(inner)
+        vlay.setContentsMargins(12, 12, 12, 12)
+        vlay.setSpacing(10)
+
+        field_style = (
+            f"background: {C_BG}; color: {C_TEXT}; border: 1px solid {C_BORDER};"
+            f"border-radius: 4px; padding: 6px 8px; font-size: 12px;"
+        )
+        lbl_style = f"color: {C_MUTED}; font-size: 11px;"
+
+        # ── Saved configs card ────────────────────────────────────────
+        saved_card_es, saved_lay_es, _ = make_card(i18n.tr("saved_configs"))
+        self._elastic_profile_bar = _ProfileBar("elastic", wrapper=saved_card_es)
+        self._elastic_profile_bar.profile_loaded.connect(self._load_elastic_profile)
+        saved_lay_es.addWidget(self._elastic_profile_bar)
+        vlay.addWidget(saved_card_es)
+
+        # ── Card: Connection ─────────────────────────────────────────
+        card_conn, lay_conn, _ = make_card(i18n.tr("new_config"))
+
+        lay_conn.addWidget(self._lbl(lbl_style, i18n.tr("elastic_field_url")))
+        self._es_url_input = QLineEdit()
+        self._es_url_input.setPlaceholderText("http://localhost:9200")
+        self._es_url_input.setStyleSheet(field_style)
+        lay_conn.addWidget(self._es_url_input)
+
+        self._es_auth_combo = QComboBox()
+        self._es_auth_combo.addItems([
+            i18n.tr("elastic_auth_none"),
+            i18n.tr("elastic_auth_apikey"),
+            i18n.tr("elastic_auth_basic"),
+        ])
+        self._es_auth_combo.setStyleSheet(
+            f"background: {C_BG}; color: {C_TEXT}; border: 1px solid {C_BORDER};"
+            f"border-radius: 4px; padding: 4px 8px; font-size: 12px;"
+        )
+        self._es_auth_combo.currentIndexChanged.connect(self._on_auth_mode_changed_es)
+        lay_conn.addWidget(self._es_auth_combo)
+
+        self._es_apikey_widget = QWidget()
+        ak_lay = QVBoxLayout(self._es_apikey_widget)
+        ak_lay.setContentsMargins(0, 4, 0, 0)
+        ak_lay.setSpacing(0)
+        self._es_apikey_input = QLineEdit()
+        self._es_apikey_input.setPlaceholderText(i18n.tr("elastic_field_apikey"))
+        self._es_apikey_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self._es_apikey_input.setStyleSheet(field_style)
+        ak_lay.addWidget(self._es_apikey_input)
+        self._es_apikey_widget.setVisible(False)
+        lay_conn.addWidget(self._es_apikey_widget)
+
+        self._es_basic_widget = QWidget()
+        bas_lay = QVBoxLayout(self._es_basic_widget)
+        bas_lay.setContentsMargins(0, 4, 0, 0)
+        bas_lay.setSpacing(4)
+        self._es_user_input = QLineEdit()
+        self._es_user_input.setPlaceholderText(i18n.tr("elastic_field_username"))
+        self._es_user_input.setStyleSheet(field_style)
+        bas_lay.addWidget(self._es_user_input)
+        self._es_pass_input = QLineEdit()
+        self._es_pass_input.setPlaceholderText(i18n.tr("elastic_field_password"))
+        self._es_pass_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self._es_pass_input.setStyleSheet(field_style)
+        bas_lay.addWidget(self._es_pass_input)
+        self._es_basic_widget.setVisible(False)
+        lay_conn.addWidget(self._es_basic_widget)
+
+        self._save_profile_btn_es = _ghost_btn("Save as profile…")
+        self._save_profile_btn_es.clicked.connect(self._on_save_elastic_profile)
+        self._save_profile_btn_es.setEnabled(False)
+        lay_conn.addWidget(self._save_profile_btn_es)
+
+        self._connect_btn_es = _primary_btn(i18n.tr("elastic_connect"))
+        self._connect_btn_es.clicked.connect(self._do_connect)
+        lay_conn.addWidget(self._connect_btn_es)
+
+        self._conn_status_es = QLabel("")
+        self._conn_status_es.setStyleSheet(lbl_style)
+        self._conn_status_es.setWordWrap(True)
+        lay_conn.addWidget(self._conn_status_es)
+
+        vlay.addWidget(card_conn)
+
+        # ── Card: Query ──────────────────────────────────────────────
+        card_query, lay_query, _ = make_card(i18n.tr("elastic_card_query"))
+
+        lay_query.addWidget(self._lbl(lbl_style, i18n.tr("elastic_field_index")))
+        idx_row = QHBoxLayout()
+        self._es_index_input = QLineEdit()
+        self._es_index_input.setPlaceholderText("logs-*")
+        self._es_index_input.setStyleSheet(field_style)
+        self._es_index_combo = QComboBox()
+        self._es_index_combo.setStyleSheet(
+            f"background: {C_BG}; color: {C_TEXT}; border: 1px solid {C_BORDER};"
+            f"border-radius: 4px; padding: 4px 8px; font-size: 12px;"
+        )
+        self._es_index_combo.setVisible(False)
+        self._es_index_combo.currentTextChanged.connect(
+            lambda t: self._es_index_input.setText(t)
+        )
+        idx_row.addWidget(self._es_index_input)
+        idx_row.addWidget(self._es_index_combo)
+        lay_query.addLayout(idx_row)
+
+        lay_query.addWidget(self._lbl(lbl_style, i18n.tr("elastic_field_ts")))
+        self._es_ts_input = QLineEdit()
+        self._es_ts_input.setPlaceholderText("@timestamp")
+        self._es_ts_input.setText("@timestamp")
+        self._es_ts_input.setStyleSheet(field_style)
+        lay_query.addWidget(self._es_ts_input)
+
+        lay_query.addWidget(self._lbl(lbl_style, i18n.tr("elastic_field_query")))
+        self._es_query_input = QLineEdit()
+        self._es_query_input.setPlaceholderText(i18n.tr("elastic_query_hint"))
+        self._es_query_input.setStyleSheet(field_style)
+        lay_query.addWidget(self._es_query_input)
+
+        lb_row = QHBoxLayout()
+        lb_row.addWidget(self._lbl(lbl_style, i18n.tr("elastic_field_lookback")))
+        lb_row.addStretch()
+        self._lookback_spin_es = QSpinBox()
+        self._lookback_spin_es.setRange(1, 168)
+        self._lookback_spin_es.setValue(1)
+        self._lookback_spin_es.setStyleSheet(
+            f"background: {C_BG}; color: {C_TEXT}; border: 1px solid {C_BORDER};"
+            f"border-radius: 4px; padding: 4px; font-size: 12px; max-width: 60px;"
+        )
+        lb_row.addWidget(self._lookback_spin_es)
+        lay_query.addLayout(lb_row)
+
+        iv_row = QHBoxLayout()
+        iv_row.addWidget(self._lbl(lbl_style, i18n.tr("elastic_field_interval")))
+        iv_row.addStretch()
+        self._interval_spin_es = QSpinBox()
+        self._interval_spin_es.setRange(1, 60)
+        self._interval_spin_es.setValue(10)
+        self._interval_spin_es.setStyleSheet(
+            f"background: {C_BG}; color: {C_TEXT}; border: 1px solid {C_BORDER};"
+            f"border-radius: 4px; padding: 4px; font-size: 12px; max-width: 60px;"
+        )
+        iv_row.addWidget(self._interval_spin_es)
+        lay_query.addLayout(iv_row)
+
+        self._open_mode_es = OpenModeWidget()
+        lay_query.addWidget(self._open_mode_es)
+
+        self._open_btn_es = _primary_btn(i18n.tr("elastic_open"))
+        self._open_btn_es.clicked.connect(self._on_open)
+        self._open_btn_es.setEnabled(False)
+        lay_query.addWidget(self._open_btn_es)
+
+        self._card_query_es = card_query
+        card_query.setVisible(False)
+        vlay.addWidget(card_query)
+        vlay.addStretch()
+
+    @staticmethod
+    def _lbl(style: str, text: str) -> QLabel:
+        lbl = QLabel(text)
+        lbl.setStyleSheet(style)
+        return lbl
+
+    def _on_auth_mode_changed_es(self, idx: int) -> None:
+        self._es_apikey_widget.setVisible(idx == 1)
+        self._es_basic_widget.setVisible(idx == 2)
+
+    def _do_connect(self) -> None:
+        url = self._es_url_input.text().strip()
+        if not url:
+            return
+        auth = self._es_auth_combo.currentIndex()
+        api_key  = self._es_apikey_input.text().strip() if auth == 1 else ""
+        username = self._es_user_input.text().strip()   if auth == 2 else ""
+        password = self._es_pass_input.text()           if auth == 2 else ""
+        self._connect_btn_es.setEnabled(False)
+        self._conn_status_es.setText(i18n.tr("elastic_connecting"))
+        self._conn_status_es.setStyleSheet(f"color: {C_MUTED}; font-size: 11px;")
+        self._connect_worker = _ElasticConnectWorker(url, api_key, username, password)
+        self._connect_worker.success.connect(self._on_connected_es)
+        self._connect_worker.failure.connect(self._on_connect_fail_es)
+        self._connect_worker.start()
+
+    def _on_connected_es(self, indices: list) -> None:
+        self._conn_status_es.setText(i18n.tr("elastic_connected"))
+        self._conn_status_es.setStyleSheet(f"color: {C_INFO}; font-size: 11px;")
+        self._connect_btn_es.setEnabled(True)
+        self._save_profile_btn_es.setEnabled(True)
+        self._card_query_es.setVisible(True)
+        self._open_btn_es.setEnabled(True)
+        if indices:
+            self._es_index_combo.clear()
+            self._es_index_combo.addItems(indices)
+            self._es_index_combo.setVisible(True)
+            self._es_index_input.setVisible(False)
+        else:
+            self._conn_status_es.setText(i18n.tr("elastic_no_indices"))
+
+    def _on_connect_fail_es(self, msg: str) -> None:
+        self._conn_status_es.setText(msg)
+        self._conn_status_es.setStyleSheet(f"color: {C_ERR}; font-size: 11px;")
+        self._connect_btn_es.setEnabled(True)
+
+    def _load_elastic_profile(self, p: dict) -> None:
+        self._es_url_input.setText(p.get("url", ""))
+        auth = p.get("auth_mode", 0)
+        self._es_auth_combo.setCurrentIndex(auth)
+        self._es_apikey_input.setText(p.get("api_key", ""))
+        self._es_user_input.setText(p.get("username", ""))
+        self._es_pass_input.setText(p.get("password", ""))
+        self._on_auth_mode_changed_es(auth)
+
+    def _on_save_elastic_profile(self) -> None:
+        url = self._es_url_input.text().strip()
+        if not url:
+            return
+        default_name = url.split("//", 1)[-1].split("/")[0]
+        name, ok = QInputDialog.getText(self, "Save profile", "Profile name:", text=default_name)
+        if not ok or not name.strip():
+            return
+        auth = self._es_auth_combo.currentIndex()
+        profiles_store.upsert("elastic", name.strip(), {
+            "url":      url,
+            "auth_mode": auth,
+            "api_key":  self._es_apikey_input.text().strip() if auth == 1 else "",
+            "username": self._es_user_input.text().strip()   if auth == 2 else "",
+            "password": self._es_pass_input.text()           if auth == 2 else "",
+        })
+        self._elastic_profile_bar.reload()
+
+    def _on_open(self) -> None:
+        url   = self._es_url_input.text().strip()
+        index = self._es_index_input.text().strip() or self._es_index_combo.currentText()
+        if not url or not index:
+            return
+        auth = self._es_auth_combo.currentIndex()
+        label = f"{url.split('//')[-1].split('/')[0]}/{index}"
+        cfg = {
+            "type":          "elastic",
+            "url":           url,
+            "index":         index,
+            "query":         self._es_query_input.text().strip() or "*",
+            "auth_mode":     auth,
+            "api_key":       self._es_apikey_input.text().strip() if auth == 1 else "",
+            "username":      self._es_user_input.text().strip()   if auth == 2 else "",
+            "password":      self._es_pass_input.text()           if auth == 2 else "",
+            "ts_field":      self._es_ts_input.text().strip() or "@timestamp",
+            "lookback_hours": self._lookback_spin_es.value(),
+            "interval_s":    self._interval_spin_es.value(),
+            "label":         label,
+        }
+        self.open_tab.emit(cfg, self._open_mode_es.get_mode())
+
+
+# ── RailwayPanel ──────────────────────────────────────────────────────────────
+
+class _RailwayConnectWorker(QThread):
+    success = pyqtSignal(list)   # list of project dicts
+    failure = pyqtSignal(str)
+
+    def __init__(self, token: str) -> None:
+        super().__init__()
+        self._token = token
+
+    def run(self) -> None:
+        try:
+            projects = railway_utils.list_projects(self._token)
+            self.success.emit(projects)
+        except RuntimeError as e:
+            self.failure.emit(str(e))
+
+
+class RailwayPanel(QWidget):
+    open_tab = pyqtSignal(dict, str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._projects: list[dict] = []
+        self._connect_worker: _RailwayConnectWorker | None = None
+        self._build_ui()
+
+    def _build_ui(self) -> None:
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setStyleSheet("background: transparent; border: none;")
+        root.addWidget(scroll)
+
+        inner = QWidget()
+        inner.setStyleSheet(f"background: {C_PANEL};")
+        scroll.setWidget(inner)
+
+        vlay = QVBoxLayout(inner)
+        vlay.setContentsMargins(12, 12, 12, 12)
+        vlay.setSpacing(10)
+
+        field_style = (
+            f"background: {C_BG}; color: {C_TEXT}; border: 1px solid {C_BORDER};"
+            f"border-radius: 4px; padding: 6px 8px; font-size: 12px;"
+        )
+        lbl_style = f"color: {C_MUTED}; font-size: 11px;"
+        list_style = (
+            f"QListWidget {{ background: {C_BG}; color: {C_TEXT}; border: 1px solid {C_BORDER};"
+            f" border-radius: 4px; font-size: 12px; }}"
+            f"QListWidget::item:selected {{ background: {C_SEL_BG}; }}"
+        )
+
+        # ── Saved configs card ────────────────────────────────────────
+        saved_card_rw, saved_lay_rw, _ = make_card(i18n.tr("saved_configs"))
+        self._railway_profile_bar = _ProfileBar("railway", wrapper=saved_card_rw)
+        self._railway_profile_bar.profile_loaded.connect(self._load_railway_profile)
+        saved_lay_rw.addWidget(self._railway_profile_bar)
+        vlay.addWidget(saved_card_rw)
+
+        # ── Card: Auth ───────────────────────────────────────────────
+        card_auth, lay_auth, _ = make_card(i18n.tr("new_config"))
+
+        lay_auth.addWidget(self._lbl(lbl_style, i18n.tr("railway_field_token")))
+        self._railway_token_input = QLineEdit()
+        self._railway_token_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self._railway_token_input.setStyleSheet(field_style)
+        lay_auth.addWidget(self._railway_token_input)
+
+        self._save_profile_btn_railway = _ghost_btn("Save as profile…")
+        self._save_profile_btn_railway.clicked.connect(self._on_save_railway_profile)
+        self._save_profile_btn_railway.setEnabled(False)
+        lay_auth.addWidget(self._save_profile_btn_railway)
+
+        self._connect_btn_railway = _primary_btn(i18n.tr("railway_connect"))
+        self._connect_btn_railway.clicked.connect(self._do_connect)
+        lay_auth.addWidget(self._connect_btn_railway)
+
+        self._conn_status_railway = QLabel("")
+        self._conn_status_railway.setStyleSheet(lbl_style)
+        self._conn_status_railway.setWordWrap(True)
+        lay_auth.addWidget(self._conn_status_railway)
+
+        vlay.addWidget(card_auth)
+
+        # ── Card: Project ────────────────────────────────────────────
+        card_proj, lay_proj, _ = make_card(i18n.tr("railway_card_project"))
+
+        self._project_list = QListWidget()
+        self._project_list.setMaximumHeight(140)
+        self._project_list.setStyleSheet(list_style)
+        self._project_list.currentRowChanged.connect(self._on_project_selected)
+        lay_proj.addWidget(self._project_list)
+
+        self._card_proj = card_proj
+        card_proj.setVisible(False)
+        vlay.addWidget(card_proj)
+
+        # ── Card: Service ────────────────────────────────────────────
+        card_svc, lay_svc, _ = make_card(i18n.tr("railway_card_service"))
+
+        self._service_list = QListWidget()
+        self._service_list.setMaximumHeight(120)
+        self._service_list.setStyleSheet(list_style)
+        lay_svc.addWidget(self._service_list)
+
+        iv_row = QHBoxLayout()
+        iv_row.addWidget(self._lbl(lbl_style, i18n.tr("railway_field_interval")))
+        iv_row.addStretch()
+        self._interval_spin_railway = QSpinBox()
+        self._interval_spin_railway.setRange(1, 60)
+        self._interval_spin_railway.setValue(10)
+        self._interval_spin_railway.setStyleSheet(
+            f"background: {C_BG}; color: {C_TEXT}; border: 1px solid {C_BORDER};"
+            f"border-radius: 4px; padding: 4px; font-size: 12px; max-width: 60px;"
+        )
+        iv_row.addWidget(self._interval_spin_railway)
+        lay_svc.addLayout(iv_row)
+
+        self._open_mode_railway = OpenModeWidget()
+        lay_svc.addWidget(self._open_mode_railway)
+
+        self._open_btn_railway = _primary_btn(i18n.tr("railway_open"))
+        self._open_btn_railway.clicked.connect(self._on_open)
+        self._open_btn_railway.setEnabled(False)
+        lay_svc.addWidget(self._open_btn_railway)
+
+        self._card_svc = card_svc
+        card_svc.setVisible(False)
+        vlay.addWidget(card_svc)
+        vlay.addStretch()
+
+    @staticmethod
+    def _lbl(style: str, text: str) -> QLabel:
+        lbl = QLabel(text)
+        lbl.setStyleSheet(style)
+        return lbl
+
+    def _do_connect(self) -> None:
+        token = self._railway_token_input.text().strip()
+        if not token:
+            return
+        self._connect_btn_railway.setEnabled(False)
+        self._conn_status_railway.setText(i18n.tr("railway_connecting"))
+        self._conn_status_railway.setStyleSheet(f"color: {C_MUTED}; font-size: 11px;")
+        self._connect_worker = _RailwayConnectWorker(token)
+        self._connect_worker.success.connect(self._on_connected_railway)
+        self._connect_worker.failure.connect(self._on_connect_fail_railway)
+        self._connect_worker.start()
+
+    def _on_connected_railway(self, projects: list) -> None:
+        self._projects = projects
+        self._conn_status_railway.setText(i18n.tr("railway_connected"))
+        self._conn_status_railway.setStyleSheet(f"color: {C_INFO}; font-size: 11px;")
+        self._connect_btn_railway.setEnabled(True)
+        self._save_profile_btn_railway.setEnabled(True)
+        self._project_list.clear()
+        if projects:
+            for p in projects:
+                self._project_list.addItem(p["name"])
+            self._card_proj.setVisible(True)
+        else:
+            self._conn_status_railway.setText(i18n.tr("railway_no_projects"))
+
+    def _on_connect_fail_railway(self, msg: str) -> None:
+        self._conn_status_railway.setText(msg)
+        self._conn_status_railway.setStyleSheet(f"color: {C_ERR}; font-size: 11px;")
+        self._connect_btn_railway.setEnabled(True)
+
+    def _on_project_selected(self, row: int) -> None:
+        if row < 0 or row >= len(self._projects):
+            return
+        project = self._projects[row]
+        services = project.get("services", [])
+        self._service_list.clear()
+        if services:
+            for svc in services:
+                self._service_list.addItem(svc["name"])
+            self._service_list.itemSelectionChanged.connect(
+                lambda: self._open_btn_railway.setEnabled(
+                    self._service_list.currentRow() >= 0
+                )
+            )
+            self._card_svc.setVisible(True)
+        else:
+            self._card_svc.setVisible(False)
+            self._conn_status_railway.setText(i18n.tr("railway_no_services"))
+
+    def _load_railway_profile(self, p: dict) -> None:
+        self._railway_token_input.setText(p.get("token", ""))
+
+    def _on_save_railway_profile(self) -> None:
+        name, ok = QInputDialog.getText(self, "Save profile", "Profile name:", text="railway")
+        if not ok or not name.strip():
+            return
+        profiles_store.upsert("railway", name.strip(), {
+            "token": self._railway_token_input.text().strip(),
+        })
+        self._railway_profile_bar.reload()
+
+    def _on_open(self) -> None:
+        token = self._railway_token_input.text().strip()
+        proj_row = self._project_list.currentRow()
+        svc_row  = self._service_list.currentRow()
+        if proj_row < 0 or svc_row < 0:
+            return
+        project = self._projects[proj_row]
+        service = project["services"][svc_row]
+        cfg = {
+            "type":         "railway",
+            "token":        token,
+            "project_name": project["name"],
+            "service_name": service["name"],
+            "service_id":   service["id"],
+            "interval_s":   self._interval_spin_railway.value(),
+            "label":        f"{project['name']}/{service['name']}",
+        }
+        self.open_tab.emit(cfg, self._open_mode_railway.get_mode())
+
+
+# ── FlyioPanel ────────────────────────────────────────────────────────────────
+
+class _FlyioConnectWorker(QThread):
+    success = pyqtSignal(list)   # app dicts
+    failure = pyqtSignal(str)
+
+    def __init__(self, token: str) -> None:
+        super().__init__()
+        self._token = token
+
+    def run(self) -> None:
+        try:
+            apps = flyio_utils.list_apps(self._token)
+            self.success.emit(apps)
+        except RuntimeError as e:
+            self.failure.emit(str(e))
+
+
+class FlyioPanel(QWidget):
+    open_tab = pyqtSignal(dict, str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._apps: list[dict] = []
+        self._connect_worker: _FlyioConnectWorker | None = None
+        self._build_ui()
+
+    def _build_ui(self) -> None:
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setStyleSheet("background: transparent; border: none;")
+        root.addWidget(scroll)
+
+        inner = QWidget()
+        inner.setStyleSheet(f"background: {C_PANEL};")
+        scroll.setWidget(inner)
+
+        vlay = QVBoxLayout(inner)
+        vlay.setContentsMargins(12, 12, 12, 12)
+        vlay.setSpacing(10)
+
+        field_style = (
+            f"background: {C_BG}; color: {C_TEXT}; border: 1px solid {C_BORDER};"
+            f"border-radius: 4px; padding: 6px 8px; font-size: 12px;"
+        )
+        lbl_style = f"color: {C_MUTED}; font-size: 11px;"
+        list_style = (
+            f"QListWidget {{ background: {C_BG}; color: {C_TEXT}; border: 1px solid {C_BORDER};"
+            f" border-radius: 4px; font-size: 12px; }}"
+            f"QListWidget::item:selected {{ background: {C_SEL_BG}; }}"
+        )
+
+        # ── Saved configs card ────────────────────────────────────────
+        saved_card_fly, saved_lay_fly, _ = make_card(i18n.tr("saved_configs"))
+        self._flyio_profile_bar = _ProfileBar("flyio", wrapper=saved_card_fly)
+        self._flyio_profile_bar.profile_loaded.connect(self._load_flyio_profile)
+        saved_lay_fly.addWidget(self._flyio_profile_bar)
+        vlay.addWidget(saved_card_fly)
+
+        # ── Card: Auth ───────────────────────────────────────────────
+        card_auth, lay_auth, _ = make_card(i18n.tr("new_config"))
+
+        lay_auth.addWidget(self._lbl(lbl_style, i18n.tr("flyio_field_token")))
+        self._flyio_token_input = QLineEdit()
+        self._flyio_token_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self._flyio_token_input.setStyleSheet(field_style)
+        lay_auth.addWidget(self._flyio_token_input)
+
+        hint = QLabel(i18n.tr("flyio_token_hint"))
+        hint.setStyleSheet(f"color: {C_MUTED}; font-size: 10.5px; font-style: italic;")
+        lay_auth.addWidget(hint)
+
+        self._save_profile_btn_flyio = _ghost_btn("Save as profile…")
+        self._save_profile_btn_flyio.clicked.connect(self._on_save_flyio_profile)
+        self._save_profile_btn_flyio.setEnabled(False)
+        lay_auth.addWidget(self._save_profile_btn_flyio)
+
+        self._connect_btn_flyio = _primary_btn(i18n.tr("flyio_connect"))
+        self._connect_btn_flyio.clicked.connect(self._do_connect)
+        lay_auth.addWidget(self._connect_btn_flyio)
+
+        self._conn_status_flyio = QLabel("")
+        self._conn_status_flyio.setStyleSheet(lbl_style)
+        self._conn_status_flyio.setWordWrap(True)
+        lay_auth.addWidget(self._conn_status_flyio)
+
+        vlay.addWidget(card_auth)
+
+        # ── Card: Application ────────────────────────────────────────
+        card_app, lay_app, _ = make_card(i18n.tr("flyio_card_app"))
+
+        self._flyio_app_list = QListWidget()
+        self._flyio_app_list.setMaximumHeight(160)
+        self._flyio_app_list.setStyleSheet(list_style)
+        self._flyio_app_list.itemSelectionChanged.connect(
+            lambda: self._open_btn_flyio.setEnabled(self._flyio_app_list.currentRow() >= 0)
+        )
+        lay_app.addWidget(self._flyio_app_list)
+
+        iv_row = QHBoxLayout()
+        iv_row.addWidget(self._lbl(lbl_style, i18n.tr("flyio_field_interval")))
+        iv_row.addStretch()
+        self._interval_spin_flyio = QSpinBox()
+        self._interval_spin_flyio.setRange(1, 60)
+        self._interval_spin_flyio.setValue(5)
+        self._interval_spin_flyio.setStyleSheet(
+            f"background: {C_BG}; color: {C_TEXT}; border: 1px solid {C_BORDER};"
+            f"border-radius: 4px; padding: 4px; font-size: 12px; max-width: 60px;"
+        )
+        iv_row.addWidget(self._interval_spin_flyio)
+        lay_app.addLayout(iv_row)
+
+        self._open_mode_flyio = OpenModeWidget()
+        lay_app.addWidget(self._open_mode_flyio)
+
+        self._open_btn_flyio = _primary_btn(i18n.tr("flyio_open"))
+        self._open_btn_flyio.clicked.connect(self._on_open)
+        self._open_btn_flyio.setEnabled(False)
+        lay_app.addWidget(self._open_btn_flyio)
+
+        self._card_app_flyio = card_app
+        card_app.setVisible(False)
+        vlay.addWidget(card_app)
+        vlay.addStretch()
+
+    @staticmethod
+    def _lbl(style: str, text: str) -> QLabel:
+        lbl = QLabel(text)
+        lbl.setStyleSheet(style)
+        return lbl
+
+    def _do_connect(self) -> None:
+        token = self._flyio_token_input.text().strip()
+        if not token:
+            return
+        self._connect_btn_flyio.setEnabled(False)
+        self._conn_status_flyio.setText(i18n.tr("flyio_connecting"))
+        self._conn_status_flyio.setStyleSheet(f"color: {C_MUTED}; font-size: 11px;")
+        self._connect_worker = _FlyioConnectWorker(token)
+        self._connect_worker.success.connect(self._on_connected_flyio)
+        self._connect_worker.failure.connect(self._on_connect_fail_flyio)
+        self._connect_worker.start()
+
+    def _on_connected_flyio(self, apps: list) -> None:
+        self._apps = apps
+        self._conn_status_flyio.setText(i18n.tr("flyio_connected"))
+        self._conn_status_flyio.setStyleSheet(f"color: {C_INFO}; font-size: 11px;")
+        self._connect_btn_flyio.setEnabled(True)
+        self._save_profile_btn_flyio.setEnabled(True)
+        self._flyio_app_list.clear()
+        if apps:
+            for a in apps:
+                status = a.get("status", "")
+                label = f"{a['name']}  ({status})" if status else a["name"]
+                item = QListWidgetItem(label)
+                item.setData(Qt.ItemDataRole.UserRole, a["name"])
+                self._flyio_app_list.addItem(item)
+            self._card_app_flyio.setVisible(True)
+        else:
+            self._conn_status_flyio.setText(i18n.tr("flyio_no_apps"))
+
+    def _on_connect_fail_flyio(self, msg: str) -> None:
+        self._conn_status_flyio.setText(msg)
+        self._conn_status_flyio.setStyleSheet(f"color: {C_ERR}; font-size: 11px;")
+        self._connect_btn_flyio.setEnabled(True)
+
+    def _load_flyio_profile(self, p: dict) -> None:
+        self._flyio_token_input.setText(p.get("token", ""))
+
+    def _on_save_flyio_profile(self) -> None:
+        name, ok = QInputDialog.getText(self, "Save profile", "Profile name:", text="flyio")
+        if not ok or not name.strip():
+            return
+        profiles_store.upsert("flyio", name.strip(), {
+            "token": self._flyio_token_input.text().strip(),
+        })
+        self._flyio_profile_bar.reload()
+
+    def _on_open(self) -> None:
+        token = self._flyio_token_input.text().strip()
+        item  = self._flyio_app_list.currentItem()
+        if not item:
+            return
+        app_name = item.data(Qt.ItemDataRole.UserRole) or item.text().split("  ")[0]
+        cfg = {
+            "type":       "flyio",
+            "token":      token,
+            "app_name":   app_name,
+            "interval_s": self._interval_spin_flyio.value(),
+            "label":      app_name,
+        }
+        self.open_tab.emit(cfg, self._open_mode_flyio.get_mode())
+
+
+# ── KubernetesPanel ───────────────────────────────────────────────────────────
+
+class _K8sConnectWorker(QThread):
+    success = pyqtSignal(list, list)  # namespaces, contexts
+    failure = pyqtSignal(str)
+
+    def __init__(self, context: str) -> None:
+        super().__init__()
+        self._context = context
+
+    def run(self) -> None:
+        try:
+            namespaces = kubernetes_utils.list_namespaces(self._context)
+            contexts   = kubernetes_utils.list_contexts()
+            self.success.emit(namespaces, contexts)
+        except RuntimeError as e:
+            self.failure.emit(str(e))
+
+
+class _K8sListPodsWorker(QThread):
+    success = pyqtSignal(list)
+    failure = pyqtSignal(str)
+
+    def __init__(self, namespace: str, context: str) -> None:
+        super().__init__()
+        self._namespace = namespace
+        self._context   = context
+
+    def run(self) -> None:
+        try:
+            pods = kubernetes_utils.list_pods(self._namespace, self._context)
+            self.success.emit(pods)
+        except RuntimeError as e:
+            self.failure.emit(str(e))
+
+
+class KubernetesPanel(QWidget):
+    open_tab = pyqtSignal(dict, str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._context = ""
+        self._connect_worker: _K8sConnectWorker | None = None
+        self._pods_worker: _K8sListPodsWorker | None = None
+        self._build_ui()
+
+    def _build_ui(self) -> None:
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        if not kubernetes_utils.is_available():
+            lbl = QLabel(i18n.tr("kubernetes_not_available"))
+            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            lbl.setWordWrap(True)
+            lbl.setStyleSheet(
+                f"color: {C_MUTED}; font-size: 13px; background: transparent; border: none; padding: 24px;"
+            )
+            root.addWidget(lbl)
+            return
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setStyleSheet("background: transparent; border: none;")
+        root.addWidget(scroll)
+
+        inner = QWidget()
+        inner.setStyleSheet(f"background: {C_PANEL};")
+        scroll.setWidget(inner)
+
+        vlay = QVBoxLayout(inner)
+        vlay.setContentsMargins(12, 12, 12, 12)
+        vlay.setSpacing(10)
+
+        field_style = (
+            f"background: {C_BG}; color: {C_TEXT}; border: 1px solid {C_BORDER};"
+            f"border-radius: 4px; padding: 6px 8px; font-size: 12px;"
+        )
+        lbl_style = f"color: {C_MUTED}; font-size: 11px;"
+        list_style = (
+            f"QListWidget {{ background: {C_BG}; color: {C_TEXT}; border: 1px solid {C_BORDER};"
+            f" border-radius: 4px; font-size: 12px; }}"
+            f"QListWidget::item:selected {{ background: {C_SEL_BG}; }}"
+        )
+
+        # ── Card: Cluster ────────────────────────────────────────────
+        card_cluster, lay_cluster, _ = make_card(i18n.tr("kubernetes_card_cluster"))
+
+        lay_cluster.addWidget(self._lbl(lbl_style, i18n.tr("kubernetes_field_context")))
+        self._k8s_context_combo = QComboBox()
+        try:
+            contexts = kubernetes_utils.list_contexts()
+            current  = kubernetes_utils.current_context()
+        except RuntimeError:
+            contexts, current = [], ""
+        self._k8s_context_combo.addItem("(current context)")
+        self._k8s_context_combo.addItems(contexts)
+        if current:
+            idx = self._k8s_context_combo.findText(current)
+            if idx >= 0:
+                self._k8s_context_combo.setCurrentIndex(idx)
+        self._k8s_context_combo.setStyleSheet(
+            f"background: {C_BG}; color: {C_TEXT}; border: 1px solid {C_BORDER};"
+            f"border-radius: 4px; padding: 4px 8px; font-size: 12px;"
+        )
+        lay_cluster.addWidget(self._k8s_context_combo)
+
+        self._connect_btn_k8s = _primary_btn(i18n.tr("kubernetes_connect"))
+        self._connect_btn_k8s.clicked.connect(self._do_connect)
+        lay_cluster.addWidget(self._connect_btn_k8s)
+
+        self._conn_status_k8s = QLabel("")
+        self._conn_status_k8s.setStyleSheet(lbl_style)
+        self._conn_status_k8s.setWordWrap(True)
+        lay_cluster.addWidget(self._conn_status_k8s)
+
+        vlay.addWidget(card_cluster)
+
+        # ── Card: Namespace / Pod ────────────────────────────────────
+        card_pod, lay_pod, _ = make_card(i18n.tr("kubernetes_card_pod"))
+
+        lay_pod.addWidget(self._lbl(lbl_style, i18n.tr("kubernetes_field_ns")))
+        self._k8s_ns_combo = QComboBox()
+        self._k8s_ns_combo.setStyleSheet(
+            f"background: {C_BG}; color: {C_TEXT}; border: 1px solid {C_BORDER};"
+            f"border-radius: 4px; padding: 4px 8px; font-size: 12px;"
+        )
+        self._k8s_ns_combo.currentTextChanged.connect(self._on_ns_changed)
+        lay_pod.addWidget(self._k8s_ns_combo)
+
+        self._k8s_pod_list = QListWidget()
+        self._k8s_pod_list.setMaximumHeight(150)
+        self._k8s_pod_list.setStyleSheet(list_style)
+        self._k8s_pod_list.itemSelectionChanged.connect(
+            lambda: self._open_btn_k8s.setEnabled(self._k8s_pod_list.currentRow() >= 0)
+        )
+        lay_pod.addWidget(self._k8s_pod_list)
+
+        lay_pod.addWidget(self._lbl(lbl_style, i18n.tr("kubernetes_field_container")))
+        self._k8s_container_input = QLineEdit()
+        self._k8s_container_input.setPlaceholderText("(auto)")
+        self._k8s_container_input.setStyleSheet(field_style)
+        lay_pod.addWidget(self._k8s_container_input)
+
+        self._open_mode_k8s = OpenModeWidget()
+        lay_pod.addWidget(self._open_mode_k8s)
+
+        self._open_btn_k8s = _primary_btn(i18n.tr("kubernetes_open"))
+        self._open_btn_k8s.clicked.connect(self._on_open)
+        self._open_btn_k8s.setEnabled(False)
+        lay_pod.addWidget(self._open_btn_k8s)
+
+        self._card_pod = card_pod
+        card_pod.setVisible(False)
+        vlay.addWidget(card_pod)
+        vlay.addStretch()
+
+    @staticmethod
+    def _lbl(style: str, text: str) -> QLabel:
+        lbl = QLabel(text)
+        lbl.setStyleSheet(style)
+        return lbl
+
+    def _do_connect(self) -> None:
+        ctx_text = self._k8s_context_combo.currentText()
+        context  = "" if ctx_text == "(current context)" else ctx_text
+        self._context = context
+        self._connect_btn_k8s.setEnabled(False)
+        self._conn_status_k8s.setText(i18n.tr("kubernetes_connecting"))
+        self._conn_status_k8s.setStyleSheet(f"color: {C_MUTED}; font-size: 11px;")
+        self._connect_worker = _K8sConnectWorker(context)
+        self._connect_worker.success.connect(self._on_connected_k8s)
+        self._connect_worker.failure.connect(self._on_connect_fail_k8s)
+        self._connect_worker.start()
+
+    def _on_connected_k8s(self, namespaces: list, _contexts: list) -> None:
+        self._conn_status_k8s.setText(i18n.tr("kubernetes_connected"))
+        self._conn_status_k8s.setStyleSheet(f"color: {C_INFO}; font-size: 11px;")
+        self._connect_btn_k8s.setEnabled(True)
+        self._k8s_ns_combo.blockSignals(True)
+        self._k8s_ns_combo.clear()
+        if namespaces:
+            self._k8s_ns_combo.addItems(namespaces)
+            self._card_pod.setVisible(True)
+        else:
+            self._conn_status_k8s.setText(i18n.tr("kubernetes_no_ns"))
+        self._k8s_ns_combo.blockSignals(False)
+        if namespaces:
+            self._on_ns_changed(self._k8s_ns_combo.currentText())
+
+    def _on_connect_fail_k8s(self, msg: str) -> None:
+        self._conn_status_k8s.setText(msg)
+        self._conn_status_k8s.setStyleSheet(f"color: {C_ERR}; font-size: 11px;")
+        self._connect_btn_k8s.setEnabled(True)
+
+    def _on_ns_changed(self, ns: str) -> None:
+        if not ns:
+            return
+        self._k8s_pod_list.clear()
+        self._open_btn_k8s.setEnabled(False)
+        self._pods_worker = _K8sListPodsWorker(ns, self._context)
+        self._pods_worker.success.connect(self._on_pods_listed)
+        self._pods_worker.failure.connect(
+            lambda e: self._conn_status_k8s.setText(e)
+        )
+        self._pods_worker.start()
+
+    def _on_pods_listed(self, pods: list) -> None:
+        self._k8s_pod_list.clear()
+        if pods:
+            for pod in pods:
+                status = pod.get("status", "")
+                label  = f"{pod['name']}  ({status})" if status else pod["name"]
+                item   = QListWidgetItem(label)
+                item.setData(Qt.ItemDataRole.UserRole, pod["name"])
+                self._k8s_pod_list.addItem(item)
+        else:
+            self._conn_status_k8s.setText(i18n.tr("kubernetes_no_pods"))
+
+    def _load_k8s_profile(self, p: dict) -> None:
+        ctx = p.get("context", "")
+        idx = self._k8s_context_combo.findText(ctx) if ctx else 0
+        self._k8s_context_combo.setCurrentIndex(max(0, idx))
+
+    def _on_open(self) -> None:
+        ns   = self._k8s_ns_combo.currentText()
+        item = self._k8s_pod_list.currentItem()
+        if not ns or not item:
+            return
+        pod       = item.data(Qt.ItemDataRole.UserRole) or item.text().split("  ")[0]
+        container = self._k8s_container_input.text().strip()
+        ctx_text  = self._k8s_context_combo.currentText()
+        context   = "" if ctx_text == "(current context)" else ctx_text
+        cfg = {
+            "type":      "kubernetes",
+            "pod":       pod,
+            "namespace": ns,
+            "context":   context,
+            "container": container,
+            "label":     f"{ns}/{pod}",
+        }
+        self.open_tab.emit(cfg, self._open_mode_k8s.get_mode())
+
+
 # ── Remote redesign: providers + AddConnectionDialog + RemoteHomePanel ────────
 
 RESULT_OPEN = 2  # custom dialog result: connect without saving
@@ -3761,7 +5028,12 @@ _REMOTE_PROVIDERS: list[tuple[str, str, str, str, str, str]] = [
     ("ssh",        "SSH",            "⌥",  "#56cf80", _SVG_SSH,    "Remote log files over SSH"),
     ("docker",     "Docker",         "◈",  "#2496ed", _SVG_DOCKER, "Remote Docker container logs"),
     ("vercel",     "Vercel",         "▲",  "#e2e2e2", _SVG_VERCEL, "Vercel deployment & runtime logs"),
-    ("loki",       "Grafana Loki",   "≡",  "#f46800", _SVG_LOKI,   "Grafana Loki log aggregation"),
+    ("loki",       "Grafana Loki",   "≡",  "#f46800", _SVG_LOKI,       "Grafana Loki log aggregation"),
+    ("datadog",    "Datadog",        "⬡",  "#632ca6", _SVG_DATADOG,    "Datadog Logs"),
+    ("elastic",    "Elasticsearch",  "⊙",  "#f04e98", _SVG_ELASTIC,    "Elasticsearch / OpenSearch"),
+    ("railway",    "Railway",        "▣",  "#b975f2", _SVG_RAILWAY,    "Railway deployment logs"),
+    ("flyio",      "Fly.io",         "⬥",  "#7b3fc4", _SVG_FLYIO,      "Fly.io app logs"),
+    ("kubernetes", "Kubernetes",     "⎈",  "#326ce5", _SVG_KUBERNETES, "Kubernetes pod logs"),
 ]
 
 _PROVIDER_FIELDS: dict[str, list[tuple[str, str, str, bool]]] = {
@@ -3808,6 +5080,32 @@ _PROVIDER_FIELDS: dict[str, list[tuple[str, str, str, bool]]] = {
         ("password", "Password",        "",                     True),
         ("token",    "Bearer token",    "(optional)",           True),
     ],
+    "datadog": [
+        ("name",    "Connection name", "datadog-prod",          False),
+        ("site",    "Site",            "US1 (datadoghq.com)",   False),
+        ("api_key", "API Key",         "",                      True),
+        ("app_key", "Application Key", "",                      True),
+    ],
+    "elastic": [
+        ("name",     "Connection name", "elastic-prod",         False),
+        ("url",      "Elasticsearch URL", "http://localhost:9200", False),
+        ("api_key",  "API Key",          "(optional)",          True),
+        ("username", "Username",         "(optional)",          False),
+        ("password", "Password",         "",                    True),
+    ],
+    "railway": [
+        ("name",  "Connection name", "railway-prod",            False),
+        ("token", "API Token",       "",                        True),
+    ],
+    "flyio": [
+        ("name",  "Connection name", "fly-prod",                False),
+        ("token", "API Token",       "",                        True),
+    ],
+    "kubernetes": [
+        ("name",      "Connection name", "k8s-prod",            False),
+        ("context",   "kubectl context", "(default context)",   False),
+        ("namespace", "Namespace",       "default",             False),
+    ],
 }
 
 
@@ -3818,7 +5116,7 @@ class AddConnectionDialog(QDialog):
 
     def __init__(self, parent=None, preselect: str | None = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Add Connection")
+        self.setWindowTitle(i18n.tr("remote_add_title"))
         self.setModal(True)
         self.setFixedWidth(500)
         self.setStyleSheet(
@@ -3831,6 +5129,9 @@ class AddConnectionDialog(QDialog):
         self._save_open_btn: QPushButton | None = None
         self._cw_embedded_panel: CloudWatchPanel | None = None
         self._cw_save_pending: bool = False
+        self._add_header_lbl: QLabel | None = None
+        _key = id(self)
+        i18n.register(_key, self._retranslate_dlg)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -3854,6 +5155,11 @@ class AddConnectionDialog(QDialog):
 
     # ── Step 1 ────────────────────────────────────────────────────────────────
 
+    def _retranslate_dlg(self) -> None:
+        self.setWindowTitle(i18n.tr("remote_add_title"))
+        if self._add_header_lbl is not None:
+            self._add_header_lbl.setText(i18n.tr("remote_add_header"))
+
     def _build_step1(self) -> QWidget:
         page = QWidget()
         page.setStyleSheet("background: transparent;")
@@ -3871,7 +5177,8 @@ class AddConnectionDialog(QDialog):
 
         titles = QVBoxLayout()
         titles.setSpacing(3)
-        t1 = QLabel("Add remote connection")
+        self._add_header_lbl = QLabel(i18n.tr("remote_add_header"))
+        t1 = self._add_header_lbl
         t1.setStyleSheet(
             f"color: {C_TEXT}; font-size: 14px; font-weight: 700;"
             " border: none; background: transparent;"
@@ -3914,7 +5221,7 @@ class AddConnectionDialog(QDialog):
         self, pid: str, name: str, icon_char: str, color: str, desc: str
     ) -> QPushButton:
         btn = QPushButton()
-        btn.setFixedSize(140, 110)
+        btn.setFixedSize(140, 105)
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.setStyleSheet(f"""
             QPushButton {{
@@ -3951,21 +5258,10 @@ class AddConnectionDialog(QDialog):
             " background: transparent; border: none;"
         )
 
-        desc_lbl = QLabel(desc)
-        desc_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        desc_lbl.setWordWrap(True)
-        desc_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        desc_lbl.setStyleSheet(
-            f"color: {C_MUTED}; font-size: 10px;"
-            " background: transparent; border: none;"
-        )
-
         inner.addStretch()
         inner.addWidget(icon_lbl, 0, Qt.AlignmentFlag.AlignHCenter)
         inner.addSpacing(8)
         inner.addWidget(name_lbl, 0, Qt.AlignmentFlag.AlignHCenter)
-        inner.addSpacing(3)
-        inner.addWidget(desc_lbl, 0, Qt.AlignmentFlag.AlignHCenter)
         inner.addStretch()
 
         btn.clicked.connect(lambda _c, p=pid: self._go_step2(p))
@@ -4116,7 +5412,8 @@ class AddConnectionDialog(QDialog):
             wl.setContentsMargins(0, 0, 0, 0)
             wl.setSpacing(5)
 
-            lbl = QLabel(label.upper())
+            display_label = i18n.tr("remote_connection_name") if key == "name" else label
+            lbl = QLabel(display_label.upper())
             lbl.setStyleSheet(
                 f"color: {C_ACCENT}; font-size: 10px; font-weight: 700;"
                 " letter-spacing: 0.8px; background: transparent; border: none;"
@@ -4187,34 +5484,6 @@ class AddConnectionDialog(QDialog):
         """Embed CloudWatchPanel directly — same proven code as AddRemoteDialog."""
         self.setFixedHeight(680)
 
-        # ── Connection name bar ──────────────────────────────────────────────
-        name_bar = QWidget()
-        name_bar.setStyleSheet(
-            "background: #17171f; border-bottom: 1px solid rgba(255,255,255,26);"
-        )
-        nb_lay = QHBoxLayout(name_bar)
-        nb_lay.setContentsMargins(20, 10, 20, 10)
-        nb_lay.setSpacing(10)
-        name_lbl = QLabel("CONNECTION NAME")
-        name_lbl.setStyleSheet(
-            f"color: {C_ACCENT}; font-size: 10px; font-weight: 700;"
-            " letter-spacing: 0.8px; background: transparent; border: none;"
-        )
-
-        name_edit = QLineEdit()
-        name_edit.setPlaceholderText("prod-us-east-1")
-        name_edit.setStyleSheet(
-            f"QLineEdit {{ background: {C_BG}; border: 1px solid rgba(255,255,255,26);"
-            f" border-radius: 5px; padding: 5px 10px;"
-            f" font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: {C_TEXT}; }}"
-            f"QLineEdit:focus {{ border-color: {C_ACCENT}88; }}"
-        )
-        name_edit.textChanged.connect(self._cw_update_footer_btns)
-        self._fields["name"] = name_edit
-        nb_lay.addWidget(name_lbl)
-        nb_lay.addWidget(name_edit, 1)
-        self._step2_layout.addWidget(name_bar)
-
         # ── Embed CloudWatchPanel ─────────────────────────────────────────────
         panel = CloudWatchPanel(parent=self)
         panel._title_lbl.setVisible(False)
@@ -4223,6 +5492,26 @@ class AddConnectionDialog(QDialog):
         panel.open_tab.connect(self._cw_on_panel_tab)
         panel.group_list.currentTextChanged.connect(lambda _: self._cw_update_footer_btns())
         self._cw_embedded_panel = panel
+
+        # ── Inject "Connection name" field at top of panel's connection card ──
+        name_lbl = QLabel(i18n.tr("remote_connection_name").upper())
+        name_lbl.setStyleSheet(
+            f"color: {C_ACCENT}; font-size: 10px; font-weight: 700;"
+            " letter-spacing: 0.8px; background: transparent; border: none;"
+        )
+        name_edit = QLineEdit()
+        name_edit.setPlaceholderText(i18n.tr("remote_connection_name"))
+        name_edit.setStyleSheet(
+            f"QLineEdit {{ background: {C_BG}; border: 1px solid rgba(255,255,255,26);"
+            f" border-radius: 5px; padding: 5px 10px;"
+            f" font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: {C_TEXT}; }}"
+            f"QLineEdit:focus {{ border-color: {C_ACCENT}88; }}"
+        )
+        name_edit.textChanged.connect(self._cw_update_footer_btns)
+        self._fields["name"] = name_edit
+        cl = panel._connection_card_lay
+        cl.insertWidget(0, name_edit)
+        cl.insertWidget(0, name_lbl)
         self._step2_layout.addWidget(panel, 1)
 
         # ── Footer ────────────────────────────────────────────────────────────
@@ -4299,13 +5588,18 @@ class AddRemoteDialog(QDialog):
     tab_requested = pyqtSignal(dict, str)
 
     _PROVIDERS: list[tuple[str, str, str, str]] = [
-        ("cloudwatch", "CloudWatch", _SVG_CLOUD,  C_ACCENT),
-        ("ssh",        "SSH",        _SVG_SSH,    C_TRACE),
-        ("docker",     "Docker",     _SVG_DOCKER, C_TS),
-        ("vercel",     "Vercel",     _SVG_VERCEL, C_ERR),
-        ("gcp",        "GCP",        _SVG_GCP,    C_INFO),
-        ("azure",      "Azure",      _SVG_AZURE,  C_ACCENT_DIM),
-        ("loki",       "Loki",       _SVG_LOKI,   "#f46800"),
+        ("cloudwatch", "CloudWatch",    _SVG_CLOUD,      C_ACCENT),
+        ("ssh",        "SSH",           _SVG_SSH,        C_TRACE),
+        ("docker",     "Docker",        _SVG_DOCKER,     C_TS),
+        ("vercel",     "Vercel",        _SVG_VERCEL,     C_ERR),
+        ("gcp",        "GCP",           _SVG_GCP,        C_INFO),
+        ("azure",      "Azure",         _SVG_AZURE,      C_ACCENT_DIM),
+        ("loki",       "Loki",          _SVG_LOKI,       "#f46800"),
+        ("datadog",    "Datadog",       _SVG_DATADOG,    "#632ca6"),
+        ("elastic",    "Elasticsearch", _SVG_ELASTIC,    "#f04e98"),
+        ("railway",    "Railway",       _SVG_RAILWAY,    "#b975f2"),
+        ("flyio",      "Fly.io",        _SVG_FLYIO,      "#7b3fc4"),
+        ("kubernetes", "Kubernetes",    _SVG_KUBERNETES, "#326ce5"),
     ]
 
     def __init__(self, parent=None,
@@ -4369,18 +5663,24 @@ class AddRemoteDialog(QDialog):
         # Page 0 — provider picker
         self._stack.addWidget(self._build_picker_page())
 
-        # Pages 1-7 — existing panels
-        self._cw_panel     = CloudWatchPanel()
-        self._ssh_panel    = SSHPanel()
-        self._docker_panel = DockerPanel()
-        self._vercel_panel = VercelPanel()
-        self._gcp_panel    = GCPPanel()
-        self._azure_panel  = AzurePanel()
-        self._loki_panel   = LokiPanel()
+        # Pages 1-12 — existing panels
+        self._cw_panel         = CloudWatchPanel()
+        self._ssh_panel        = SSHPanel()
+        self._docker_panel     = DockerPanel()
+        self._vercel_panel     = VercelPanel()
+        self._gcp_panel        = GCPPanel()
+        self._azure_panel      = AzurePanel()
+        self._loki_panel       = LokiPanel()
+        self._datadog_panel    = DatadogPanel()
+        self._elastic_panel    = ElasticPanel()
+        self._railway_panel    = RailwayPanel()
+        self._flyio_panel      = FlyioPanel()
+        self._kubernetes_panel = KubernetesPanel()
 
         for panel in (self._cw_panel, self._ssh_panel, self._docker_panel,
                       self._vercel_panel, self._gcp_panel, self._azure_panel,
-                      self._loki_panel):
+                      self._loki_panel, self._datadog_panel, self._elastic_panel,
+                      self._railway_panel, self._flyio_panel, self._kubernetes_panel):
             panel.open_tab.connect(self._on_panel_open_tab)
             self._stack.addWidget(panel)
 
@@ -4394,6 +5694,11 @@ class AddRemoteDialog(QDialog):
             "gcp":        self._gcp_panel._load_gcp_profile,
             "azure":      self._azure_panel._load_az_profile,
             "loki":       self._loki_panel._load_loki_profile,
+            "datadog":    self._datadog_panel._load_datadog_profile,
+            "elastic":    self._elastic_panel._load_elastic_profile,
+            "railway":    self._railway_panel._load_railway_profile,
+            "flyio":      self._flyio_panel._load_flyio_profile,
+            "kubernetes": self._kubernetes_panel._load_k8s_profile,
         }
 
         if prefill_service:
@@ -4497,13 +5802,22 @@ class RemoteHomePanel(QWidget):
 
     tab_requested = pyqtSignal(dict, str)
 
-    _PROVIDER_ORDER = ["cloudwatch", "gcp", "azure", "ssh", "docker", "vercel", "loki"]
+    _PROVIDER_ORDER = [
+        "cloudwatch", "gcp", "azure", "ssh", "docker", "vercel",
+        "loki", "datadog", "elastic", "railway", "flyio", "kubernetes",
+    ]
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self._expanded: dict[str, bool] = {}
         self._build_ui()
         self.reload()
+        _key = id(self)
+        i18n.register(_key, self.retranslate)
+
+    def retranslate(self) -> None:
+        self._remote_title_lbl.setText(i18n.tr("remote_title"))
+        self._remote_add_btn.setText(i18n.tr("remote_add_btn"))
 
     # ── Build ─────────────────────────────────────────────────────────────────
 
@@ -4522,15 +5836,15 @@ class RemoteHomePanel(QWidget):
         h_lay.setContentsMargins(14, 0, 14, 0)
         h_lay.setSpacing(10)
 
-        title = QLabel(i18n.tr("remote_title"))
-        title.setStyleSheet(
+        self._remote_title_lbl = QLabel(i18n.tr("remote_title"))
+        self._remote_title_lbl.setStyleSheet(
             f"color: {C_TEXT}; font-size: 15px; font-weight: 700;"
         )
-        h_lay.addWidget(title, 1)
+        h_lay.addWidget(self._remote_title_lbl, 1)
 
-        add_btn = _primary_btn("+ Add")
-        add_btn.clicked.connect(self._on_add)
-        h_lay.addWidget(add_btn)
+        self._remote_add_btn = _primary_btn(i18n.tr("remote_add_btn"))
+        self._remote_add_btn.clicked.connect(self._on_add)
+        h_lay.addWidget(self._remote_add_btn)
         root.addWidget(header)
 
         # Scrollable provider groups
@@ -5653,6 +6967,11 @@ _SOURCE_COLORS = {
     "gcp":              C_INFO,
     "azure":            C_ACCENT,
     "loki":             "#f46800",
+    "datadog":          "#632ca6",
+    "elastic":          "#f04e98",
+    "railway":          "#b975f2",
+    "flyio":            "#7b3fc4",
+    "kubernetes":       "#326ce5",
 }
 
 
@@ -7182,6 +8501,11 @@ class MainWindow(QMainWindow):
             "gcp":              self.open_gcp_tab,
             "azure":            self.open_azure_tab,
             "loki":             self.open_loki_tab,
+            "datadog":          self.open_datadog_tab,
+            "elastic":          self.open_elastic_tab,
+            "railway":          self.open_railway_tab,
+            "flyio":            self.open_flyio_tab,
+            "kubernetes":       self.open_kubernetes_tab,
         }
         fn = dispatch.get(cfg.get("type", ""))
         if fn:
@@ -7592,6 +8916,77 @@ class MainWindow(QMainWindow):
         viewer._ws_meta = {k: v for k, v in cfg.items()
                            if k not in ("password", "token")}
         viewer._ws_meta["type"] = "loki"
+        self._add_tab(label, viewer, worker, split)
+
+    def open_datadog_tab(self, cfg: dict, split: str = "tab"):
+        label = cfg.get("label", cfg.get("base_url", "datadog"))
+        worker = DatadogWorker(
+            cfg["base_url"], cfg.get("query", "*"),
+            cfg["api_key"], cfg["app_key"],
+            lookback_hours=cfg.get("lookback_hours", 1),
+            interval_s=cfg.get("interval_s", 10),
+        )
+        viewer = LogViewer(source_type="datadog")
+        viewer.set_title(f"datadog  ›  {label}")
+        viewer._ws_meta = {k: v for k, v in cfg.items()
+                           if k not in ("api_key", "app_key")}
+        viewer._ws_meta["type"] = "datadog"
+        self._add_tab(label, viewer, worker, split)
+
+    def open_elastic_tab(self, cfg: dict, split: str = "tab"):
+        label = cfg.get("label", cfg.get("url", "elastic"))
+        auth  = cfg.get("auth_mode", 0)
+        worker = ElasticWorker(
+            cfg["url"], cfg["index"], cfg.get("query", "*"),
+            api_key=cfg.get("api_key", "")  if auth == 1 else "",
+            username=cfg.get("username", "") if auth == 2 else "",
+            password=cfg.get("password", "") if auth == 2 else "",
+            ts_field=cfg.get("ts_field", "@timestamp"),
+            lookback_hours=cfg.get("lookback_hours", 1),
+            interval_s=cfg.get("interval_s", 10),
+        )
+        viewer = LogViewer(source_type="elastic")
+        viewer.set_title(f"elastic  ›  {label}")
+        viewer._ws_meta = {k: v for k, v in cfg.items()
+                           if k not in ("api_key", "password")}
+        viewer._ws_meta["type"] = "elastic"
+        self._add_tab(label, viewer, worker, split)
+
+    def open_railway_tab(self, cfg: dict, split: str = "tab"):
+        label = cfg.get("label", cfg.get("service_name", "railway"))
+        worker = RailwayWorker(
+            cfg["token"], cfg["project_name"], cfg["service_name"],
+            cfg["service_id"], interval_s=cfg.get("interval_s", 10),
+        )
+        viewer = LogViewer(source_type="railway")
+        viewer.set_title(f"railway  ›  {label}")
+        viewer._ws_meta = {k: v for k, v in cfg.items() if k != "token"}
+        viewer._ws_meta["type"] = "railway"
+        self._add_tab(label, viewer, worker, split)
+
+    def open_flyio_tab(self, cfg: dict, split: str = "tab"):
+        label = cfg.get("label", cfg.get("app_name", "fly.io"))
+        worker = FlyioWorker(
+            cfg["token"], cfg["app_name"],
+            interval_s=cfg.get("interval_s", 5),
+        )
+        viewer = LogViewer(source_type="flyio")
+        viewer.set_title(f"fly.io  ›  {label}")
+        viewer._ws_meta = {k: v for k, v in cfg.items() if k != "token"}
+        viewer._ws_meta["type"] = "flyio"
+        self._add_tab(label, viewer, worker, split)
+
+    def open_kubernetes_tab(self, cfg: dict, split: str = "tab"):
+        label = cfg.get("label", cfg.get("pod", "k8s"))
+        worker = KubernetesWorker(
+            cfg["pod"], cfg["namespace"],
+            context=cfg.get("context", ""),
+            container=cfg.get("container", ""),
+        )
+        viewer = LogViewer(source_type="kubernetes")
+        viewer.set_title(f"k8s  ›  {label}")
+        viewer._ws_meta = {k: v for k, v in cfg.items()}
+        viewer._ws_meta["type"] = "kubernetes"
         self._add_tab(label, viewer, worker, split)
 
     # ── Internal tab management ───────────────────────────────────────────────
