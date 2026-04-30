@@ -13,6 +13,7 @@ from PyQt6.QtCore import QThread, pyqtSignal
 import azure_utils
 import cloudwatch
 import gcp_utils
+import loki_utils
 import vercel_utils
 
 # ── Docker timestamp helper ──────────────────────────────────────────────────
@@ -643,5 +644,70 @@ class AzureWorker(QThread):
                     self.status.emit(f"Azure {self._label} — {len(events)} new rows")
                 else:
                     self.status.emit(f"Azure {self._label} — tailing…")
+            except RuntimeError as e:
+                self.error.emit(str(e))
+
+
+# ── Grafana Loki worker ───────────────────────────────────────────────────────
+
+class LokiWorker(QThread):
+    """Polls Grafana Loki via query_range and emits new log entries."""
+    new_lines    = pyqtSignal(list)  # [(ts_ms, message), ...]
+    status       = pyqtSignal(str)
+    error        = pyqtSignal(str)
+    history_done = pyqtSignal(int)
+
+    def __init__(self, url: str, query: str,
+                 username: str = "", password: str = "", token: str = "",
+                 lookback_hours: float = 1.0, interval_s: float = 5.0) -> None:
+        super().__init__()
+        self._url        = url
+        self._query      = query
+        self._username   = username
+        self._password   = password
+        self._token      = token
+        self._lookback_h = lookback_hours
+        self._interval_ms = int(interval_s * 1000)
+        self._stop       = False
+
+    def stop(self) -> None:
+        self._stop = True
+
+    def run(self) -> None:
+        label = self._url.split("//", 1)[-1].split("/")[0]
+        self.status.emit(f"Loading Loki logs from {label}…")
+        now_ns   = int(time.time() * 1e9)
+        start_ns = int((time.time() - self._lookback_h * 3600) * 1e9)
+        try:
+            events = loki_utils.fetch_logs(
+                self._url, self._query, start_ns, now_ns,
+                self._username, self._password, self._token,
+            )
+            self._last_ns = events[-1][0] * 1_000_000 + 1 if events else now_ns
+            if events:
+                self.new_lines.emit(events)
+            self.history_done.emit(len(events))
+            self.status.emit(f"Loki {label} — {len(events)} entries loaded")
+        except RuntimeError as e:
+            self.error.emit(str(e))
+            return
+
+        while not self._stop:
+            self.msleep(self._interval_ms)
+            if self._stop:
+                break
+            try:
+                end_ns = int(time.time() * 1e9)
+                events = loki_utils.fetch_logs(
+                    self._url, self._query, self._last_ns, end_ns,
+                    self._username, self._password, self._token,
+                    limit=200,
+                )
+                if events:
+                    self._last_ns = events[-1][0] * 1_000_000 + 1
+                    self.new_lines.emit(events)
+                    self.status.emit(f"Loki {label} — {len(events)} new entries")
+                else:
+                    self.status.emit(f"Loki {label} — tailing…")
             except RuntimeError as e:
                 self.error.emit(str(e))
