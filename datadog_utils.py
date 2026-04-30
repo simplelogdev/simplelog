@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 DD_SITES: dict[str, str] = {
     "US1 (datadoghq.com)":     "https://api.datadoghq.com",
@@ -90,10 +90,10 @@ def fetch_logs(base_url: str, query: str, from_iso: str, to_iso: str,
 
 
 def now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
 
 def offset_iso(hours: float) -> str:
     from datetime import timedelta
-    dt = datetime.now(timezone.utc) - timedelta(hours=hours)
+    dt = datetime.now(UTC) - timedelta(hours=hours)
     return dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")

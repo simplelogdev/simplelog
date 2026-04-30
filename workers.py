@@ -782,7 +782,6 @@ class DatadogWorker(QThread):
 
 
 def _ts_ms_to_iso(ts_ms: int) -> str:
-    from datetime import timezone
     dt = datetime.fromtimestamp(ts_ms / 1000, tz=UTC)
     return dt.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
