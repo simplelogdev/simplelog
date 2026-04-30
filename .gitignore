@@ -1,0 +1,25 @@
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+.DS_Store
+
+# PyInstaller
+dist/
+*.spec.bak
+
+# Build artifacts (keep build/ scripts, ignore generated output)
+build/__pycache__/
+
+# Test / coverage artifacts
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Snapcraft build artifacts (no longer used)
+prime/
+stage/
+parts/
+*.snap

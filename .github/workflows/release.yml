@@ -1,0 +1,143 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  # ── Linux ──────────────────────────────────────────────────────────────────
+  build-linux:
+    name: Build · Linux
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Qt system libraries
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends \
+            libgl1 libegl1 libxkbcommon0 libdbus-1-3 \
+            libxcb-cursor0 libxcb-icccm4 libxcb-image0 \
+            libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 \
+            libxcb-xinerama0 libxcb-xfixes0 \
+            dpkg-dev fuse libfuse2
+
+      - name: Install Python deps
+        run: pip install pyinstaller -r requirements.txt
+
+      - name: Build AppImage + .deb
+        env:
+          VERSION: ${{ github.ref_name }}
+          QT_QPA_PLATFORM: offscreen
+        run: bash build/build_linux.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-artifacts
+          path: |
+            dist/simplelog-*.AppImage
+            dist/simplelog_amd64.deb
+
+  # ── macOS ──────────────────────────────────────────────────────────────────
+  build-macos:
+    name: Build · macOS
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python deps
+        run: pip install pyinstaller -r requirements.txt
+
+      - name: Build .dmg
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: bash build/build_macos.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-artifacts
+          path: dist/SimpleLog-macOS.dmg
+
+  # ── GitHub Release ─────────────────────────────────────────────────────────
+  release:
+    name: Publish Release
+    needs: [build-linux, build-macos]
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-artifacts
+          path: release-assets/
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: macos-artifacts
+          path: release-assets/
+
+      - name: Show artifacts
+        run: ls -lh release-assets/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-assets/*
+          generate_release_notes: true
+          body: |
+            ## Install SimpleLog ${{ github.ref_name }}
+
+            ### macOS (Homebrew)
+            ```bash
+            brew tap simplelogdev/tap
+            brew install --cask simplelog
+            ```
+            Or download **SimpleLog-macOS.dmg** below and drag **SimpleLog.app** to Applications.
+
+            ### Debian / Ubuntu
+            ```bash
+            curl -sSL https://raw.githubusercontent.com/simplelogdev/simplelog/master/install.sh | bash
+            # or manually:
+            sudo dpkg -i simplelog_amd64.deb
+            ```
+
+            ### Other Linux (AppImage)
+            ```bash
+            curl -sSL https://raw.githubusercontent.com/simplelogdev/simplelog/master/install.sh | bash
+            # or manually:
+            chmod +x simplelog-x86_64.AppImage && ./simplelog-x86_64.AppImage
+            ```
+
+            ### One-liner (all platforms)
+            ```bash
+            curl -sSL https://raw.githubusercontent.com/simplelogdev/simplelog/master/install.sh | bash
+            ```
+
+      - name: Check Homebrew tap token
+        id: tap-token
+        run: echo "enabled=$( [ -n "$VAL" ] && echo true || echo false )" >> $GITHUB_OUTPUT
+        env:
+          VAL: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+      - name: Update Homebrew tap
+        if: steps.tap-token.outputs.enabled == 'true'
+        env:
+          GH_PAT: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          VERSION: ${{ github.ref_name }}
+        run: bash build/update_tap.sh "${VERSION#v}"
+

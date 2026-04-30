@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- Background -->
+  <rect width="256" height="256" rx="40" fill="#1e1e1e"/>
+
+  <!-- Terminal frame -->
+  <rect x="28" y="44" width="200" height="168" rx="10" fill="#2d2d2d"/>
+
+  <!-- Title bar -->
+  <rect x="28" y="44" width="200" height="28" rx="10" fill="#3a3a3a"/>
+  <rect x="28" y="58" width="200" height="14" fill="#3a3a3a"/>
+
+  <!-- Traffic lights -->
+  <circle cx="52" cy="58" r="6" fill="#f28b82"/>
+  <circle cx="72" cy="58" r="6" fill="#fdd663"/>
+  <circle cx="92" cy="58" r="6" fill="#81c995"/>
+
+  <!-- Title text dots -->
+  <rect x="110" y="54" width="60" height="8" rx="4" fill="#555"/>
+
+  <!-- Log lines -->
+  <!-- ERROR line -->
+  <rect x="44" y="86" width="36" height="8" rx="2" fill="#f28b82"/>
+  <rect x="86" y="86" width="110" height="8" rx="2" fill="#555"/>
+
+  <!-- WARN line -->
+  <rect x="44" y="104" width="36" height="8" rx="2" fill="#fdd663"/>
+  <rect x="86" y="104" width="90" height="8" rx="2" fill="#555"/>
+
+  <!-- INFO line -->
+  <rect x="44" y="122" width="28" height="8" rx="2" fill="#81c995"/>
+  <rect x="78" y="122" width="120" height="8" rx="2" fill="#555"/>
+
+  <!-- DEBUG line -->
+  <rect x="44" y="140" width="40" height="8" rx="2" fill="#82b1ff"/>
+  <rect x="90" y="140" width="80" height="8" rx="2" fill="#555"/>
+
+  <!-- INFO line 2 -->
+  <rect x="44" y="158" width="28" height="8" rx="2" fill="#81c995"/>
+  <rect x="78" y="158" width="100" height="8" rx="2" fill="#555"/>
+
+  <!-- ERROR line 2 -->
+  <rect x="44" y="176" width="36" height="8" rx="2" fill="#f28b82"/>
+  <rect x="86" y="176" width="70" height="8" rx="2" fill="#555"/>
+</svg>

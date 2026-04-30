@@ -1,0 +1,1136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SimpleLog</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg:       #0d0d10;
+      --rail:     #080810;
+      --side:     #111116;
+      --panel:    #14141a;
+      --card:     #1a1a24;
+      --status:   #090910;
+      --border:   rgba(255,255,255,0.07);
+      --accent:   #5b8fff;
+      --accent-d: rgba(91,143,255,0.15);
+      --text:     #d4d4e0;
+      --muted:    #52526a;
+      --sel:      rgba(91,143,255,0.12);
+      --err:      #f07878;
+      --warn:     #f0c060;
+      --info:     #56cf80;
+      --debug:    #5b8fff;
+      --trace:    #b07cf0;
+      --ts:       #50c8dc;
+    }
+    html, body, #root { height: 100%; width: 100%; overflow: hidden; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: "Inter", system-ui, sans-serif;
+      font-size: 12px;
+      -webkit-font-smoothing: antialiased;
+    }
+    * { scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.1) transparent; }
+    ::-webkit-scrollbar { width: 5px; height: 5px; }
+    ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 3px; }
+    input, button, select { font-family: inherit; font-size: 12px; }
+    input:focus { outline: none; }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useRef, useEffect, useCallback } = React;
+
+/* ─── Design tokens ─── */
+const C = {
+  bg: "#0d0d10", rail: "#080810", side: "#111116", panel: "#14141a",
+  card: "#1a1a24", status: "#090910",
+  border: "rgba(255,255,255,0.07)",
+  accent: "#5b8fff", accentD: "rgba(91,143,255,0.15)",
+  text: "#d4d4e0", muted: "#52526a", sel: "rgba(91,143,255,0.12)",
+  err: "#f07878", warn: "#f0c060", info: "#56cf80",
+  debug: "#5b8fff", trace: "#b07cf0", ts: "#50c8dc",
+};
+
+/* ─── Provider definitions ─── */
+const PROVIDERS = [
+  { id: "cloudwatch", name: "CloudWatch",   label: "AWS CloudWatch",      icon: "☁", color: "#ff9900",
+    desc: "AWS CloudWatch Logs",
+    fields: [
+      { key: "name",    label: "Connection name", ph: "prod-us-east-1",       type: "text" },
+      { key: "region",  label: "AWS Region",       ph: "us-east-1",            type: "text" },
+      { key: "profile", label: "AWS Profile",      ph: "default",              type: "text" },
+      { key: "ak",      label: "Access Key ID",    ph: "AKIA… (optional)",     type: "text" },
+      { key: "sk",      label: "Secret Key",       ph: "••••••• (optional)",   type: "password" },
+    ],
+  },
+  { id: "gcp", name: "GCP", label: "Google Cloud Logging", icon: "⬡", color: "#4285f4",
+    desc: "Google Cloud Logging",
+    fields: [
+      { key: "name",    label: "Connection name", ph: "gcp-staging",           type: "text" },
+      { key: "project", label: "Project ID",       ph: "my-project-123",       type: "text" },
+      { key: "creds",   label: "Service account JSON", ph: "~/.config/gcloud/key.json", type: "text" },
+    ],
+  },
+  { id: "azure", name: "Azure", label: "Azure Monitor", icon: "△", color: "#0078d4",
+    desc: "Azure Monitor / Log Analytics",
+    fields: [
+      { key: "name",      label: "Connection name", ph: "azure-prod",           type: "text" },
+      { key: "workspace", label: "Workspace ID",    ph: "xxxx-xxxx-xxxx-xxxx",  type: "text" },
+      { key: "tenant",    label: "Tenant ID",       ph: "xxxx-xxxx-xxxx-xxxx",  type: "text" },
+      { key: "client_id", label: "Client ID",       ph: "xxxx-xxxx-xxxx-xxxx",  type: "text" },
+      { key: "secret",    label: "Client secret",   ph: "•••••••",              type: "password" },
+    ],
+  },
+  { id: "ssh", name: "SSH", label: "SSH", icon: "⌥", color: "#56cf80",
+    desc: "Remote log files over SSH",
+    fields: [
+      { key: "name",     label: "Connection name", ph: "prod-server",           type: "text" },
+      { key: "host",     label: "Host",             ph: "192.168.1.10",          type: "text" },
+      { key: "port",     label: "Port",             ph: "22",                    type: "text" },
+      { key: "user",     label: "Username",         ph: "ubuntu",               type: "text" },
+      { key: "key_path", label: "SSH key path",     ph: "~/.ssh/id_rsa",        type: "text" },
+    ],
+  },
+  { id: "docker", name: "Docker", label: "Docker", icon: "◈", color: "#2496ed",
+    desc: "Remote Docker container logs",
+    fields: [
+      { key: "name",      label: "Connection name", ph: "docker-remote",         type: "text" },
+      { key: "host",      label: "Docker host",     ph: "tcp://10.0.0.1:2376",   type: "text" },
+      { key: "cert_path", label: "TLS cert path",   ph: "/path/to/certs (opt.)", type: "text" },
+    ],
+  },
+  { id: "vercel", name: "Vercel", label: "Vercel", icon: "▲", color: "#e2e2e2",
+    desc: "Vercel deployment & runtime logs",
+    fields: [
+      { key: "name",  label: "Connection name", ph: "vercel-prod",              type: "text" },
+      { key: "token", label: "API Token",        ph: "•••••••••••••",           type: "password" },
+      { key: "team",  label: "Team slug",        ph: "acme-corp (optional)",    type: "text" },
+    ],
+  },
+];
+
+const INITIAL_CONNECTIONS = {
+  cloudwatch: [
+    { id: 101, name: "prod-us-east-1",    region: "us-east-1",  profile: "default" },
+    { id: 102, name: "staging-eu-west-1", region: "eu-west-1",  profile: "staging" },
+  ],
+  gcp:    [{ id: 201, name: "gcp-prod",     project: "myapp-prod-432" }],
+  azure:  [],
+  ssh:    [{ id: 401, name: "prod-server",  host: "10.0.0.42", user: "ubuntu" }],
+  docker: [],
+  vercel: [{ id: 601, name: "vercel-main",  team: "acme-corp" }],
+};
+
+/* ─── Log sample data ─── */
+const LOG_LINES = [
+  { ts: "14:32:01", lvl: "INFO",  msg: "systemd[1]: Started Network Manager." },
+  { ts: "14:32:02", lvl: "WARN",  msg: "kernel: net_ratelimit: 12 callbacks suppressed" },
+  { ts: "14:32:04", lvl: "ERROR", msg: "sshd[4821]: Connection closed by 10.0.0.3 port 52104" },
+  { ts: "14:32:05", lvl: "INFO",  msg: 'app[web.1]: {"event":"request","method":"GET","path":"/api/health","status":200,"ms":3}' },
+  { ts: "14:32:07", lvl: "DEBUG", msg: "nginx: upstream response time 0.042 s, request: GET /api/v2/users" },
+  { ts: "14:32:09", lvl: "INFO",  msg: "app[web.2]: POST /api/events 201 12ms" },
+  { ts: "14:32:11", lvl: "ERROR", msg: "app[worker.1]: Unhandled exception in job #8823 — JobTimeoutError" },
+  { ts: "14:32:12", lvl: "WARN",  msg: "redis: SLOWLOG entry: duration=2341ms command=KEYS *" },
+  { ts: "14:32:14", lvl: "INFO",  msg: "app[web.1]: GET /api/v2/logs 200 8ms" },
+  { ts: "14:32:15", lvl: "DEBUG", msg: "scheduler: tick — 0 jobs pending" },
+  { ts: "14:32:18", lvl: "INFO",  msg: "app[web.3]: WS connect from 172.18.0.1" },
+  { ts: "14:32:19", lvl: "ERROR", msg: "postgres: could not connect to server: Connection refused" },
+  { ts: "14:32:21", lvl: "INFO",  msg: "cron[1132]: (root) CMD (/usr/lib/update-notifier/apt-check)" },
+  { ts: "14:32:22", lvl: "WARN",  msg: "app[web.1]: response time exceeded 500ms — GET /api/reports" },
+];
+
+const lvlColor = { ERROR: C.err, WARN: C.warn, INFO: C.info, DEBUG: C.debug };
+
+/* ────────────── SVG Icons ────────────── */
+const IcoRemote = ({ c = C.muted, s = 18 }) => (
+  <svg width={s} height={s} viewBox="0 0 24 24" fill={c}>
+    <path d="M1 9l2 2c4.97-4.97 13.03-4.97 18 0l2-2C16.93 2.93 7.08 2.93 1 9zm8 8l3 3 3-3c-1.65-1.66-4.34-1.66-6 0zm-4-4 2 2c2.76-2.76 7.24-2.76 10 0l2-2C15.14 9.14 8.87 9.14 5 13z"/>
+  </svg>
+);
+const IcoFolder = ({ c = C.muted, s = 18 }) => (
+  <svg width={s} height={s} viewBox="0 0 24 24" fill={c}>
+    <path d="M20 6h-8l-2-2H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm0 12H4V8h16v10z"/>
+  </svg>
+);
+const IcoBookmark = ({ c = C.muted, s = 18 }) => (
+  <svg width={s} height={s} viewBox="0 0 24 24" fill={c}>
+    <path d="M17 3H7c-1.1 0-2 .9-2 2v16l7-3 7 3V5c0-1.1-.9-2-2-2z"/>
+  </svg>
+);
+const IcoChevronR = ({ c = C.muted, s = 14 }) => (
+  <svg width={s} height={s} viewBox="0 0 24 24" fill={c}>
+    <path d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/>
+  </svg>
+);
+const IcoChevronL = ({ c = C.muted, s = 14 }) => (
+  <svg width={s} height={s} viewBox="0 0 24 24" fill={c}>
+    <path d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z"/>
+  </svg>
+);
+const IcoChevronD = ({ c = C.muted, s = 12 }) => (
+  <svg width={s} height={s} viewBox="0 0 24 24" fill={c}>
+    <path d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6 1.41-1.41z"/>
+  </svg>
+);
+const IcoTrash = ({ c = C.muted, s = 14 }) => (
+  <svg width={s} height={s} viewBox="0 0 24 24" fill={c}>
+    <path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zm2.46-7.12l1.41-1.41L12 12.59l2.12-2.12 1.41 1.41L13.41 14l2.12 2.12-1.41 1.41L12 15.41l-2.12 2.12-1.41-1.41L10.59 14l-2.13-2.12zM15.5 4l-1-1h-5l-1 1H5v2h14V4z"/>
+  </svg>
+);
+const IcoPlus = ({ c = C.muted, s = 14 }) => (
+  <svg width={s} height={s} viewBox="0 0 24 24" fill={c}>
+    <path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/>
+  </svg>
+);
+const IcoClose = ({ c = C.muted, s = 10 }) => (
+  <svg width={s} height={s} viewBox="0 0 24 24" fill={c}>
+    <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
+  </svg>
+);
+const IcoCheck = ({ c = C.info, s = 14 }) => (
+  <svg width={s} height={s} viewBox="0 0 24 24" fill={c}>
+    <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/>
+  </svg>
+);
+
+/* ────────────── Shared UI primitives ────────────── */
+const FieldLabel = ({ text }) => (
+  <div style={{ fontSize: 10, fontWeight: 700, color: C.accent, letterSpacing: ".8px", textTransform: "uppercase", marginBottom: 4 }}>
+    {text}
+  </div>
+);
+
+const Input = ({ value, onChange, placeholder, type = "text", style = {} }) => {
+  const [focused, setFocused] = useState(false);
+  return (
+    <input
+      type={type} value={value} placeholder={placeholder}
+      onChange={e => onChange(e.target.value)}
+      onFocus={() => setFocused(true)}
+      onBlur={() => setFocused(false)}
+      style={{
+        background: C.bg, border: `1px solid ${focused ? C.accent + "88" : "rgba(255,255,255,0.1)"}`,
+        borderRadius: 5, padding: "6px 10px", color: C.text,
+        width: "100%", fontFamily: "JetBrains Mono, monospace", fontSize: 11.5,
+        transition: "border-color .12s", ...style,
+      }}
+    />
+  );
+};
+
+const PrimaryBtn = ({ children, onClick, disabled, style = {} }) => {
+  const [hov, setHov] = useState(false);
+  return (
+    <button onClick={onClick} disabled={disabled}
+      onMouseEnter={() => setHov(true)} onMouseLeave={() => setHov(false)}
+      style={{
+        background: disabled ? "rgba(91,143,255,0.3)" : hov ? "#7aa3ff" : C.accent,
+        border: "none", borderRadius: 6, padding: "7px 14px",
+        color: disabled ? C.muted : "#000", fontWeight: 700, cursor: disabled ? "default" : "pointer",
+        fontSize: 12, transition: "background .12s", ...style,
+      }}>
+      {children}
+    </button>
+  );
+};
+
+const GhostBtn = ({ children, onClick, style = {} }) => {
+  const [hov, setHov] = useState(false);
+  return (
+    <button onClick={onClick}
+      onMouseEnter={() => setHov(true)} onMouseLeave={() => setHov(false)}
+      style={{
+        background: hov ? "rgba(255,255,255,0.06)" : "transparent",
+        border: `1px solid ${C.border}`, borderRadius: 6, padding: "7px 14px",
+        color: hov ? C.text : C.muted, cursor: "pointer",
+        fontSize: 12, transition: "all .12s", ...style,
+      }}>
+      {children}
+    </button>
+  );
+};
+
+const Card = ({ children, style = {} }) => (
+  <div style={{
+    background: C.card, border: `1px solid rgba(255,255,255,0.07)`,
+    borderRadius: 10, padding: "12px 14px", ...style,
+  }}>
+    {children}
+  </div>
+);
+
+const CardTitle = ({ text }) => (
+  <div style={{ fontSize: 10, fontWeight: 700, color: C.accent, letterSpacing: "1px", textTransform: "uppercase", marginBottom: 10 }}>
+    {text}
+  </div>
+);
+
+/* ────────────── Provider + Form Modal (single popin) ────────────── */
+function AddConnectionModal({ onClose, onOpen, onSaveAndOpen }) {
+  const [step, setStep] = useState("pick"); // "pick" | "form"
+  const [provider, setProvider] = useState(null);
+  const [hov, setHov] = useState(null);
+  const [form, setForm] = useState({});
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    const h = e => { if (e.key === "Escape") { if (step === "form") setStep("pick"); else onClose(); } };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, [step, onClose]);
+
+  const selectProvider = (p) => {
+    setProvider(p);
+    setForm(Object.fromEntries(p.fields.map(f => [f.key, ""])));
+    setStep("form");
+  };
+
+  const valid = form.name?.trim().length > 0;
+
+  const handleOpen = () => {
+    if (!valid) return;
+    onOpen({ ...form, id: Date.now(), providerId: provider.id });
+    onClose();
+  };
+
+  const handleSaveAndOpen = () => {
+    if (!valid || saving) return;
+    setSaving(true);
+    setTimeout(() => {
+      setSaved(true);
+      onSaveAndOpen({ ...form, id: Date.now(), providerId: provider.id });
+      setTimeout(onClose, 500);
+    }, 700);
+  };
+
+  return (
+    <div style={{
+      position: "fixed", inset: 0, zIndex: 200,
+      background: "rgba(0,0,0,0.72)", backdropFilter: "blur(6px)",
+      display: "flex", alignItems: "center", justifyContent: "center",
+    }} onClick={onClose}>
+      <div style={{
+        background: "#13131a", border: `1px solid rgba(255,255,255,0.1)`,
+        borderRadius: 14, width: step === "pick" ? 500 : 480,
+        boxShadow: "0 40px 100px rgba(0,0,0,0.85)",
+        display: "flex", flexDirection: "column",
+        maxHeight: "80vh", overflow: "hidden",
+        transition: "width .15s",
+      }} onClick={e => e.stopPropagation()}>
+
+        {/* ── Step 1: pick provider ── */}
+        {step === "pick" && <>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "22px 22px 16px" }}>
+            <div>
+              <div style={{ fontWeight: 700, fontSize: 14, color: C.text }}>Add remote connection</div>
+              <div style={{ color: C.muted, fontSize: 11.5, marginTop: 3 }}>Select a provider to configure</div>
+            </div>
+            <ModalCloseBtn onClick={onClose} />
+          </div>
+          <div style={{ padding: "0 22px 22px" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+              {PROVIDERS.map(p => (
+                <button key={p.id}
+                  onClick={() => selectProvider(p)}
+                  onMouseEnter={() => setHov(p.id)}
+                  onMouseLeave={() => setHov(null)}
+                  style={{
+                    background: hov === p.id ? "#1e1e2c" : "#17171f",
+                    border: `1px solid ${hov === p.id ? "rgba(255,255,255,0.13)" : "rgba(255,255,255,0.06)"}`,
+                    borderRadius: 9, padding: "13px 13px 11px",
+                    cursor: "pointer", textAlign: "left", transition: "all .12s",
+                  }}>
+                  <div style={{
+                    width: 30, height: 30, borderRadius: 7,
+                    background: p.color + "20", border: `1px solid ${p.color}35`,
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    fontSize: 15, color: p.color, marginBottom: 9,
+                  }}>{p.icon}</div>
+                  <div style={{ fontWeight: 600, fontSize: 12, color: C.text, marginBottom: 3 }}>{p.name}</div>
+                  <div style={{ fontSize: 10.5, color: C.muted, lineHeight: 1.45 }}>{p.desc}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+        </>}
+
+        {/* ── Step 2: fill form ── */}
+        {step === "form" && provider && <>
+          {/* header */}
+          <div style={{
+            display: "flex", alignItems: "center", gap: 10,
+            padding: "18px 22px 14px", borderBottom: `1px solid rgba(255,255,255,0.07)`,
+          }}>
+            <button onClick={() => setStep("pick")} style={{
+              background: "none", border: "none", cursor: "pointer",
+              color: C.muted, display: "flex", alignItems: "center", padding: 2, borderRadius: 4,
+            }}
+              onMouseEnter={e => e.currentTarget.style.color = C.text}
+              onMouseLeave={e => e.currentTarget.style.color = C.muted}>
+              <IcoChevronL c="currentColor" s={16} />
+            </button>
+            <div style={{
+              width: 26, height: 26, borderRadius: 7,
+              background: provider.color + "20", border: `1px solid ${provider.color}35`,
+              display: "flex", alignItems: "center", justifyContent: "center",
+              fontSize: 14, color: provider.color,
+            }}>{provider.icon}</div>
+            <div>
+              <div style={{ fontWeight: 700, fontSize: 13.5, color: C.text }}>{provider.label}</div>
+              <div style={{ fontSize: 11, color: C.muted, marginTop: 1 }}>New connection</div>
+            </div>
+            <div style={{ marginLeft: "auto" }}>
+              <ModalCloseBtn onClick={onClose} />
+            </div>
+          </div>
+
+          {/* fields */}
+          <div style={{ overflowY: "auto", padding: "18px 22px", display: "flex", flexDirection: "column", gap: 14 }}>
+            {provider.fields.map(f => (
+              <label key={f.key} style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                <FieldLabel text={f.label} />
+                <Input
+                  type={f.type} value={form[f.key] || ""} placeholder={f.ph}
+                  onChange={v => setForm(prev => ({ ...prev, [f.key]: v }))}
+                />
+              </label>
+            ))}
+          </div>
+
+          {/* footer — two actions */}
+          <div style={{
+            padding: "14px 22px 18px", borderTop: `1px solid rgba(255,255,255,0.07)`,
+            display: "flex", alignItems: "center", gap: 8,
+          }}>
+            <GhostBtn onClick={onClose}>Cancel</GhostBtn>
+            <div style={{ flex: 1 }} />
+            {/* Open only */}
+            <GhostBtn onClick={handleOpen} style={{ opacity: valid ? 1 : .4, cursor: valid ? "pointer" : "default" }}>
+              Open
+            </GhostBtn>
+            {/* Save & Open */}
+            <PrimaryBtn onClick={handleSaveAndOpen} disabled={!valid || saving || saved}>
+              {saved
+                ? <span style={{ display: "flex", alignItems: "center", gap: 5 }}><IcoCheck s={13} c="#000" /> Saved</span>
+                : saving ? "Saving…"
+                : <span style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                    Save &amp; Open
+                  </span>}
+            </PrimaryBtn>
+          </div>
+
+          {/* hint */}
+          <div style={{ padding: "0 22px 14px", fontSize: 10.5, color: C.muted, lineHeight: 1.5 }}>
+            <strong style={{ color: "#6a6a8a" }}>Open</strong> — connect once without saving. &nbsp;
+            <strong style={{ color: "#6a6a8a" }}>Save &amp; Open</strong> — store the connection for later.
+          </div>
+        </>}
+      </div>
+    </div>
+  );
+}
+
+function ModalCloseBtn({ onClick }) {
+  return (
+    <button onClick={onClick} style={{
+      background: "none", border: "none", cursor: "pointer",
+      color: C.muted, padding: 4, display: "flex", alignItems: "center", borderRadius: 4,
+    }}
+      onMouseEnter={e => e.currentTarget.style.color = C.text}
+      onMouseLeave={e => e.currentTarget.style.color = C.muted}>
+      <IcoClose s={14} c="currentColor" />
+    </button>
+  );
+}
+
+/* ────────────── Connection Row ────────────── */
+function ConnRow({ conn, provider, onDelete }) {
+  const [confirm, setConfirm] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [hov, setHov] = useState(false);
+
+  const subtitle = (() => {
+    if (provider.id === "cloudwatch") return conn.region || "";
+    if (provider.id === "gcp")        return conn.project || "";
+    if (provider.id === "azure")      return conn.workspace ? conn.workspace.slice(0, 22) + "…" : "";
+    if (provider.id === "vercel")     return conn.team || "";
+    if (provider.id === "docker")     return conn.host || "";
+    if (provider.id === "ssh")        return conn.user ? `${conn.user}@${conn.host}` : conn.host || "";
+    return "";
+  })();
+
+  const handleDel = () => {
+    if (!confirm) { setConfirm(true); return; }
+    setDeleting(true);
+    setTimeout(() => onDelete(conn.id), 350);
+  };
+
+  return (
+    <div
+      onMouseEnter={() => setHov(true)}
+      onMouseLeave={() => { setHov(false); setConfirm(false); }}
+      style={{
+        display: "flex", alignItems: "center", gap: 10,
+        padding: "9px 10px", borderRadius: 6,
+        background: deleting ? "rgba(240,120,120,0.05)" : hov ? "rgba(255,255,255,0.04)" : "transparent",
+        opacity: deleting ? 0.5 : 1, transition: "all .2s",
+      }}>
+      {/* status dot */}
+      <div style={{
+        width: 6, height: 6, borderRadius: "50%", flexShrink: 0,
+        background: C.info, boxShadow: `0 0 5px ${C.info}88`,
+      }} />
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontWeight: 500, fontSize: 12.5, color: C.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {conn.name}
+        </div>
+        {subtitle && (
+          <div style={{ fontSize: 10.5, color: C.muted, fontFamily: "JetBrains Mono, monospace", marginTop: 1 }}>
+            {subtitle}
+          </div>
+        )}
+      </div>
+      {/* delete btn — only show on hover */}
+      {(hov || confirm) && (
+        <button onClick={handleDel} style={{
+          background: confirm ? "rgba(240,120,120,0.12)" : "transparent",
+          border: `1px solid ${confirm ? "rgba(240,120,120,0.35)" : "transparent"}`,
+          borderRadius: 5, cursor: "pointer",
+          color: confirm ? C.err : C.muted,
+          padding: "3px 8px", fontSize: 11, fontWeight: 500,
+          display: "flex", alignItems: "center", gap: 4, transition: "all .12s", flexShrink: 0,
+        }}
+          onMouseEnter={e => { if (!confirm) e.currentTarget.style.color = C.err; }}
+          onMouseLeave={e => { if (!confirm) e.currentTarget.style.color = C.muted; }}>
+          {confirm
+            ? <><IcoClose s={9} c={C.err} /> Confirm</>
+            : <IcoTrash s={13} c="currentColor" />}
+        </button>
+      )}
+    </div>
+  );
+}
+
+/* ────────────── Provider detail view ────────────── */
+function ProviderDetail({ provider, connections, onDelete, onAddNew, onBack }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+      {/* header */}
+      <div style={{ padding: "12px 14px 10px", borderBottom: `1px solid ${C.border}` }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+          <button onClick={onBack} style={{
+            background: "none", border: "none", cursor: "pointer",
+            color: C.muted, display: "flex", alignItems: "center", padding: 2, borderRadius: 4,
+          }}
+            onMouseEnter={e => e.currentTarget.style.color = C.text}
+            onMouseLeave={e => e.currentTarget.style.color = C.muted}>
+            <IcoChevronL c="currentColor" s={16} />
+          </button>
+          <div style={{
+            width: 22, height: 22, borderRadius: 6,
+            background: provider.color + "20", border: `1px solid ${provider.color}35`,
+            display: "flex", alignItems: "center", justifyContent: "center",
+            fontSize: 12, color: provider.color,
+          }}>{provider.icon}</div>
+          <span style={{ fontWeight: 700, fontSize: 13, color: C.text }}>{provider.label}</span>
+          <span style={{
+            marginLeft: "auto", fontSize: 10, color: C.muted,
+            background: "rgba(255,255,255,0.05)", border: `1px solid ${C.border}`,
+            borderRadius: 99, padding: "2px 8px",
+          }}>{connections.length}</span>
+        </div>
+
+        {/* Add connection button */}
+        <AddBtn onClick={onAddNew} />
+      </div>
+
+      {/* connection list */}
+      <div style={{ flex: 1, overflowY: "auto", padding: "6px 6px" }}>
+        {connections.length === 0 ? (
+          <EmptyState provider={provider} />
+        ) : (
+          <div>
+            {connections.map(c => (
+              <ConnRow key={c.id} conn={c} provider={provider} onDelete={onDelete} />
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ────────────── Add button (dashed) ────────────── */
+function AddBtn({ onClick }) {
+  const [hov, setHov] = useState(false);
+  return (
+    <button onClick={onClick}
+      onMouseEnter={() => setHov(true)} onMouseLeave={() => setHov(false)}
+      style={{
+        width: "100%", background: "transparent",
+        border: `1px dashed ${hov ? C.accent + "60" : "rgba(255,255,255,0.1)"}`,
+        borderRadius: 6, padding: "7px 12px", cursor: "pointer",
+        color: hov ? C.accent : C.muted, fontSize: 12, fontWeight: 500,
+        display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+        transition: "all .12s",
+      }}>
+      <IcoPlus s={13} c="currentColor" /> Add connection
+    </button>
+  );
+}
+
+/* ────────────── Empty state ────────────── */
+function EmptyState({ provider }) {
+  return (
+    <div style={{ textAlign: "center", padding: "28px 16px", color: C.muted }}>
+      <div style={{ fontSize: 22, opacity: .35, marginBottom: 8 }}>{provider.icon}</div>
+      <div style={{ fontSize: 12 }}>No connections yet</div>
+      <div style={{ fontSize: 11, color: "#3a3a4a", marginTop: 4 }}>Click "Add connection" above</div>
+    </div>
+  );
+}
+
+/* ────────────── Remote Panel (main) ────────────── */
+function RemotePanel({ connections, setConnections }) {
+  const [step, setStep] = useState("list");       // "list" | "provider"
+  const [activeProvider, setActiveProvider] = useState(null);
+  const [showModal, setShowModal] = useState(false);
+
+  const totalConns = Object.values(connections).flat().length;
+
+  const handleDelete = (providerId, connId) => {
+    setConnections(prev => ({
+      ...prev,
+      [providerId]: prev[providerId].filter(c => c.id !== connId),
+    }));
+  };
+
+  const openProvider = (p) => { setActiveProvider(p); setStep("provider"); };
+
+  /* Called from modal — "Open" without saving */
+  const handleOpen = (data) => {
+    // Just open — no persistence, show a toast-like feedback
+    console.log("Open (no save):", data);
+  };
+
+  /* Called from modal — "Save & Open" */
+  const handleSaveAndOpen = (data) => {
+    const { providerId, ...rest } = data;
+    setConnections(prev => ({
+      ...prev,
+      [providerId]: [...(prev[providerId] || []), rest],
+    }));
+  };
+
+  /* ── Provider detail view ── */
+  if (step === "provider" && activeProvider) return (
+    <>
+      <ProviderDetail
+        provider={activeProvider}
+        connections={connections[activeProvider.id] || []}
+        onDelete={id => handleDelete(activeProvider.id, id)}
+        onAddNew={() => setShowModal(true)}
+        onBack={() => setStep("list")}
+      />
+      {showModal && (
+        <AddConnectionModal
+          onClose={() => setShowModal(false)}
+          onOpen={handleOpen}
+          onSaveAndOpen={handleSaveAndOpen}
+        />
+      )}
+    </>
+  );
+
+  /* ── Default list view ── */
+  return (
+    <>
+      <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+        <div style={{ padding: "14px 14px 12px", borderBottom: `1px solid ${C.border}` }}>
+          <div style={{ fontWeight: 700, fontSize: 15, color: C.text, marginBottom: 10 }}>Remote</div>
+          <button onClick={() => setShowModal(true)}
+            style={{
+              width: "100%", background: C.accent, border: "none", borderRadius: 6,
+              padding: "8px 12px", cursor: "pointer",
+              color: "#000", fontSize: 12, fontWeight: 700,
+              display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+              transition: "background .12s",
+            }}
+            onMouseEnter={e => e.currentTarget.style.background = "#7aa3ff"}
+            onMouseLeave={e => e.currentTarget.style.background = C.accent}>
+            <IcoPlus s={13} c="#000" /> Add
+          </button>
+        </div>
+
+        <div style={{ flex: 1, overflowY: "auto", padding: "10px 10px" }}>
+          {totalConns === 0 ? (
+            <div style={{ textAlign: "center", padding: "40px 16px", color: C.muted }}>
+              <div style={{ marginBottom: 10, opacity: .2 }}><IcoRemote s={36} c={C.muted} /></div>
+              <div style={{ fontSize: 12, marginBottom: 4 }}>No remote connections</div>
+              <div style={{ fontSize: 11, color: "#3a3a4a" }}>Click "Add" to connect a provider</div>
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {PROVIDERS.filter(p => (connections[p.id] || []).length > 0).map(p => (
+                <ProviderGroup key={p.id} provider={p} connections={connections[p.id] || []}
+                  onOpen={() => openProvider(p)}
+                  onDelete={id => handleDelete(p.id, id)} />
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {showModal && (
+        <AddConnectionModal
+          onClose={() => setShowModal(false)}
+          onOpen={handleOpen}
+          onSaveAndOpen={handleSaveAndOpen}
+        />
+      )}
+    </>
+  );
+}
+
+/* ────────────── Provider Group (collapsed list) ────────────── */
+function ProviderGroup({ provider: p, connections, onOpen, onDelete }) {
+  const [expanded, setExpanded] = useState(true);
+  const [hovH, setHovH] = useState(false);
+
+  return (
+    <div style={{ borderRadius: 8, overflow: "hidden", border: `1px solid rgba(255,255,255,0.07)` }}>
+      {/* header row */}
+      <button
+        onMouseEnter={() => setHovH(true)} onMouseLeave={() => setHovH(false)}
+        onClick={() => setExpanded(x => !x)}
+        style={{
+          width: "100%", background: hovH ? "#1e1e2c" : C.card,
+          border: "none", padding: "9px 10px", cursor: "pointer",
+          display: "flex", alignItems: "center", gap: 8, textAlign: "left",
+          transition: "background .1s",
+        }}>
+        <div style={{
+          width: 20, height: 20, borderRadius: 5, flexShrink: 0,
+          background: p.color + "18", border: `1px solid ${p.color}30`,
+          display: "flex", alignItems: "center", justifyContent: "center",
+          fontSize: 11, color: p.color,
+        }}>{p.icon}</div>
+        <span style={{ fontWeight: 600, fontSize: 12, color: C.text, flex: 1 }}>{p.name}</span>
+        <span style={{ fontSize: 10, color: C.muted, marginRight: 4 }}>{connections.length}</span>
+        <div style={{ transform: expanded ? "rotate(0deg)" : "rotate(-90deg)", transition: "transform .15s" }}>
+          <IcoChevronD c={C.muted} s={12} />
+        </div>
+      </button>
+
+      {/* connections */}
+      {expanded && connections.map(c => (
+        <ConnRowCompact key={c.id} conn={c} provider={p} onOpen={onOpen} onDelete={() => onDelete(c.id)} />
+      ))}
+
+      {/* add row */}
+      {expanded && (
+        <AddRowInline onOpen={onOpen} />
+      )}
+    </div>
+  );
+}
+
+function ConnRowCompact({ conn, provider: p, onOpen, onDelete }) {
+  const [hov, setHov] = useState(false);
+  const [confirm, setConfirm] = useState(false);
+  const subtitle = (() => {
+    if (p.id === "cloudwatch") return conn.region;
+    if (p.id === "gcp") return conn.project;
+    if (p.id === "ssh") return conn.user ? `${conn.user}@${conn.host}` : conn.host;
+    if (p.id === "vercel") return conn.team;
+    if (p.id === "docker") return conn.host;
+    return "";
+  })();
+
+  return (
+    <div
+      onMouseEnter={() => setHov(true)}
+      onMouseLeave={() => { setHov(false); setConfirm(false); }}
+      style={{
+        display: "flex", alignItems: "center", gap: 8,
+        padding: "7px 10px 7px 38px",
+        borderTop: `1px solid rgba(255,255,255,0.05)`,
+        background: hov ? "rgba(255,255,255,0.03)" : "rgba(17,17,22,0.6)",
+        cursor: "pointer", transition: "background .1s",
+      }}
+      onClick={e => { if (!e.defaultPrevented) onOpen(); }}>
+      <div style={{ width: 5, height: 5, borderRadius: "50%", background: C.info, flexShrink: 0, boxShadow: `0 0 4px ${C.info}88` }} />
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <span style={{ fontSize: 11.5, color: "#b0b0c0", fontFamily: "JetBrains Mono, monospace" }}>{conn.name}</span>
+        {subtitle && <span style={{ fontSize: 10, color: C.muted, marginLeft: 6 }}>{subtitle}</span>}
+      </div>
+      {hov && (
+        <button onClick={e => { e.preventDefault(); e.stopPropagation(); if (!confirm) { setConfirm(true); return; } onDelete(); }}
+          style={{
+            background: confirm ? "rgba(240,120,120,0.12)" : "transparent",
+            border: `1px solid ${confirm ? "rgba(240,120,120,0.3)" : "transparent"}`,
+            borderRadius: 4, cursor: "pointer",
+            color: confirm ? C.err : C.muted,
+            padding: "2px 6px", fontSize: 10.5,
+            display: "flex", alignItems: "center", gap: 3, flexShrink: 0,
+          }}>
+          {confirm ? "Confirm" : <IcoTrash s={11} c="currentColor" />}
+        </button>
+      )}
+    </div>
+  );
+}
+
+function AddRowInline({ onOpen }) {
+  const [hov, setHov] = useState(false);
+  return (
+    <div
+      onClick={onOpen}
+      onMouseEnter={() => setHov(true)}
+      onMouseLeave={() => setHov(false)}
+      style={{
+        display: "flex", alignItems: "center", gap: 6,
+        padding: "6px 10px 6px 38px",
+        borderTop: `1px solid rgba(255,255,255,0.05)`,
+        background: hov ? "rgba(91,143,255,0.05)" : "transparent",
+        cursor: "pointer", transition: "background .1s",
+        color: hov ? C.accent : C.muted, fontSize: 11,
+      }}>
+      <IcoPlus s={11} c="currentColor" /> Add connection
+    </div>
+  );
+}
+
+/* ────────────── Nav Rail button ────────────── */
+function NavBtn({ icon, active, onClick }) {
+  const [hov, setHov] = useState(false);
+  return (
+    <button onClick={onClick}
+      onMouseEnter={() => setHov(true)}
+      onMouseLeave={() => setHov(false)}
+      style={{
+        width: 40, height: 40, borderRadius: 8, border: "none", cursor: "pointer",
+        background: active ? "rgba(91,143,255,0.15)" : hov ? "rgba(255,255,255,0.06)" : "transparent",
+        display: "flex", alignItems: "center", justifyContent: "center",
+        transition: "background .12s",
+      }}>
+      {React.cloneElement(icon, { c: active ? C.accent : hov ? C.text : C.muted })}
+    </button>
+  );
+}
+
+/* ────────────── Right Sidebar (Filter/Search) ────────────── */
+function RightSidebar() {
+  const [search, setSearch] = useState("");
+  const [filter, setFilter] = useState("");
+  const [secSearch, setSecSearch] = useState(true);
+  const [secFilter, setSecFilter] = useState(true);
+  const [secKeys, setSecKeys] = useState(true);
+
+  const SectionHeader = ({ label, open, onToggle, badge }) => {
+    const [hov, setHov] = useState(false);
+    return (
+      <div onClick={onToggle}
+        onMouseEnter={() => setHov(true)} onMouseLeave={() => setHov(false)}
+        style={{
+          display: "flex", alignItems: "center", gap: 6,
+          padding: "7px 10px", cursor: "pointer",
+          background: hov ? "rgba(255,255,255,0.03)" : "transparent",
+          borderRadius: 5, transition: "background .1s",
+        }}>
+        <div style={{ transform: open ? "rotate(0deg)" : "rotate(-90deg)", transition: "transform .15s", display: "flex" }}>
+          <IcoChevronD c={C.muted} s={11} />
+        </div>
+        <span style={{ flex: 1, fontSize: 10.5, fontWeight: 600, color: C.muted, letterSpacing: ".5px", textTransform: "uppercase" }}>{label}</span>
+        {badge != null && (
+          <span style={{ fontSize: 9.5, color: "#3a3a50", background: "rgba(255,255,255,0.05)", border: `1px solid ${C.border}`, borderRadius: 99, padding: "1px 6px" }}>{badge}</span>
+        )}
+      </div>
+    );
+  };
+
+  return (
+    <div style={{ background: C.panel, borderLeft: `1px solid ${C.border}`, width: 220, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+      <div style={{ overflowY: "auto", flex: 1, padding: "8px 8px" }}>
+        {/* Search */}
+        <SectionHeader label="Search" open={secSearch} onToggle={() => setSecSearch(x => !x)} badge={search ? "1" : "0"} />
+        {secSearch && (
+          <div style={{ padding: "4px 4px 8px" }}>
+            <div style={{ background: C.card, border: `1px solid rgba(255,255,255,0.08)`, borderRadius: 6, padding: "4px 8px" }}>
+              <input value={search} onChange={e => setSearch(e.target.value)}
+                placeholder="Search logs… (Ctrl+F)"
+                style={{
+                  background: "transparent", border: "none", color: C.text,
+                  width: "100%", fontSize: 11.5, fontFamily: "JetBrains Mono, monospace",
+                }}
+              />
+            </div>
+            {search && (
+              <div style={{ display: "flex", gap: 4, marginTop: 6, alignItems: "center" }}>
+                <button style={{ background: "none", border: `1px solid ${C.border}`, borderRadius: 4, color: C.muted, padding: "2px 8px", cursor: "pointer", fontSize: 11 }}>▲</button>
+                <button style={{ background: "none", border: `1px solid ${C.border}`, borderRadius: 4, color: C.muted, padding: "2px 8px", cursor: "pointer", fontSize: 11 }}>▼</button>
+                <span style={{ fontSize: 10.5, color: C.muted, marginLeft: 4 }}>3 hits</span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Filter */}
+        <SectionHeader label="Filter" open={secFilter} onToggle={() => setSecFilter(x => !x)} badge="0" />
+        {secFilter && (
+          <div style={{ padding: "4px 4px 8px", display: "flex", flexDirection: "column", gap: 4 }}>
+            <div style={{ background: C.card, border: `1px solid rgba(255,255,255,0.08)`, borderRadius: 6, padding: "4px 8px" }}>
+              <input value={filter} onChange={e => setFilter(e.target.value)}
+                placeholder="Filter pattern…"
+                style={{ background: "transparent", border: "none", color: C.text, width: "100%", fontSize: 11.5, fontFamily: "JetBrains Mono, monospace" }}
+              />
+            </div>
+            <div style={{ display: "flex", gap: 4 }}>
+              {["+ AND", "+ OR"].map(lbl => (
+                <button key={lbl} style={{
+                  background: "transparent", border: `1px solid rgba(255,255,255,0.1)`,
+                  borderRadius: 4, color: C.muted, padding: "3px 8px", cursor: "pointer", fontSize: 10.5,
+                }}>{lbl}</button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* JSON Keys */}
+        <SectionHeader label="JSON Keys" open={secKeys} onToggle={() => setSecKeys(x => !x)} badge="4" />
+        {secKeys && (
+          <div style={{ padding: "4px 4px 8px", display: "flex", flexWrap: "wrap", gap: 5 }}>
+            {["event", "method", "path", "status"].map(k => (
+              <button key={k} style={{
+                background: "transparent", border: `1px solid rgba(176,124,240,0.25)`,
+                borderRadius: 99, color: C.trace, padding: "2px 9px",
+                cursor: "pointer", fontSize: 10.5, fontFamily: "JetBrains Mono, monospace",
+              }}>{k}</button>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ────────────── Log Viewer ────────────── */
+function LogViewer({ lines }) {
+  return (
+    <div style={{ flex: 1, overflowY: "auto", padding: "4px 0", fontFamily: "JetBrains Mono, monospace", fontSize: 12, lineHeight: 1.85 }}>
+      {lines.map((l, i) => (
+        <div key={i}
+          style={{
+            display: "flex", gap: 12, padding: "0 20px",
+            background: i % 2 === 0 ? "transparent" : "rgba(255,255,255,0.015)",
+          }}
+          onMouseEnter={e => e.currentTarget.style.background = "rgba(255,255,255,0.035)"}
+          onMouseLeave={e => e.currentTarget.style.background = i % 2 === 0 ? "transparent" : "rgba(255,255,255,0.015)"}>
+          <span style={{ color: C.ts, flexShrink: 0, userSelect: "none" }}>{l.ts}</span>
+          <span style={{ color: lvlColor[l.lvl] || C.muted, flexShrink: 0, width: 44, fontWeight: 600, fontSize: 11 }}>{l.lvl}</span>
+          <span style={{ color: "#c0c0d0" }}>{l.msg}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ────────────── Main App ────────────── */
+function App() {
+  const [connections, setConnections] = useState(INITIAL_CONNECTIONS);
+  const [navIdx, setNavIdx] = useState(0); // 0=remote, 1=file, 2=ws
+  const [activeTab, setActiveTab] = useState(0);
+  const [tabs] = useState([
+    { label: "prod-us-east-1",    icon: "☁", color: "#ff9900" },
+    { label: "staging-eu-west-1", icon: "☁", color: "#ff9900" },
+  ]);
+
+  const navItems = [
+    { icon: <IcoRemote />, tip: "Remote" },
+    { icon: <IcoFolder />, tip: "File" },
+    { icon: <IcoBookmark />, tip: "Workspaces" },
+  ];
+
+  return (
+    <div style={{ display: "flex", height: "100vh", width: "100vw", overflow: "hidden", background: C.bg }}>
+
+      {/* ── Nav Rail ── */}
+      <div style={{
+        width: 52, flexShrink: 0, background: C.rail,
+        borderRight: `1px solid ${C.border}`,
+        display: "flex", flexDirection: "column", alignItems: "center",
+        padding: "12px 0",
+      }}>
+        {/* Logo */}
+        <div style={{
+          width: 32, height: 32, borderRadius: 8, background: C.accent,
+          display: "flex", alignItems: "center", justifyContent: "center",
+          fontWeight: 800, fontSize: 12, color: "#000", marginBottom: 10,
+          letterSpacing: "-.5px",
+        }}>SL</div>
+
+        {/* divider */}
+        <div style={{ width: 28, height: 1, background: C.border, marginBottom: 8 }} />
+
+        {/* Nav buttons */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+          {navItems.map((item, i) => (
+            <NavBtn key={i} icon={item.icon} active={navIdx === i} onClick={() => setNavIdx(i)} />
+          ))}
+        </div>
+      </div>
+
+      {/* ── Left Panel ── */}
+      <div style={{
+        width: 268, flexShrink: 0, background: C.side,
+        borderRight: `1px solid ${C.border}`,
+        display: "flex", flexDirection: "column", overflow: "hidden",
+      }}>
+        {navIdx === 0 && (
+          <RemotePanel connections={connections} setConnections={setConnections} />
+        )}
+        {navIdx === 1 && (
+          <div style={{ padding: "14px 14px", color: C.muted, fontSize: 12 }}>
+            <div style={{ fontWeight: 700, fontSize: 15, color: C.text, marginBottom: 14 }}>Open file</div>
+            <Card style={{ marginBottom: 12 }}>
+              <CardTitle text="Open file" />
+              <div style={{ color: C.muted, fontSize: 11.5, marginBottom: 12, lineHeight: 1.6 }}>
+                Browse to a log file to open it in a new tab.
+              </div>
+              <PrimaryBtn style={{ width: "100%" }}>Browse…</PrimaryBtn>
+            </Card>
+            <Card>
+              <CardTitle text="Recent files" />
+              <div style={{ color: "#3a3a4a", fontSize: 11.5, textAlign: "center", padding: "12px 0" }}>
+                No recent files
+              </div>
+            </Card>
+          </div>
+        )}
+        {navIdx === 2 && (
+          <div style={{ padding: "14px 14px", color: C.muted, fontSize: 12 }}>
+            <div style={{ fontWeight: 700, fontSize: 15, color: C.text, marginBottom: 14 }}>Workspaces</div>
+            <Card>
+              <CardTitle text="Saved workspaces" />
+              <div style={{ color: "#3a3a4a", fontSize: 11.5, textAlign: "center", padding: "12px 0" }}>
+                No workspaces saved
+              </div>
+              <GhostBtn style={{ width: "100%", marginTop: 8 }}>Save current session…</GhostBtn>
+            </Card>
+          </div>
+        )}
+      </div>
+
+      {/* ── Main area ── */}
+      <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+        {/* Menu bar */}
+        <div style={{
+          height: 32, background: C.rail, borderBottom: `1px solid ${C.border}`,
+          display: "flex", alignItems: "center", padding: "0 12px", gap: 2, flexShrink: 0,
+        }}>
+          {["File", "Edit", "View", "Help"].map(m => (
+            <button key={m} style={{
+              background: "none", border: "none", color: C.text, padding: "4px 10px",
+              fontSize: 12, cursor: "pointer", borderRadius: 4,
+            }}
+              onMouseEnter={e => e.currentTarget.style.background = "rgba(255,255,255,0.08)"}
+              onMouseLeave={e => e.currentTarget.style.background = "none"}>
+              {m}
+            </button>
+          ))}
+        </div>
+
+        {/* Tab bar */}
+        <div style={{
+          display: "flex", alignItems: "stretch", background: C.panel,
+          borderBottom: `1px solid ${C.border}`, flexShrink: 0, height: 38,
+        }}>
+          {tabs.map((t, i) => (
+            <div key={i} onClick={() => setActiveTab(i)}
+              style={{
+                display: "flex", alignItems: "center", gap: 7, padding: "0 14px",
+                borderRight: `1px solid ${C.border}`,
+                background: activeTab === i ? C.bg : "transparent",
+                borderTop: activeTab === i ? `2px solid ${C.accent}` : "2px solid transparent",
+                cursor: "pointer", color: activeTab === i ? C.text : C.muted,
+                fontSize: 12, transition: "all .1s", userSelect: "none",
+              }}>
+              <span style={{ color: activeTab === i ? t.color : C.muted, fontSize: 11 }}>{t.icon}</span>
+              {t.label}
+              {activeTab === i && (
+                <button style={{
+                  background: "none", border: "none", cursor: "pointer",
+                  color: C.muted, marginLeft: 4, padding: 2, display: "flex", alignItems: "center", borderRadius: 3,
+                }}
+                  onMouseEnter={e => e.currentTarget.style.background = "rgba(240,120,120,0.15)"}
+                  onMouseLeave={e => e.currentTarget.style.background = "none"}
+                  onClick={e => e.stopPropagation()}>
+                  <IcoClose s={9} c="currentColor" />
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+
+        {/* Log area + right sidebar */}
+        <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
+          {/* Log viewer */}
+          <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+            <LogViewer lines={LOG_LINES} />
+            {/* viewer toolbar */}
+            <div style={{
+              height: 30, borderTop: `1px solid ${C.border}`,
+              display: "flex", alignItems: "center", padding: "0 14px", gap: 14,
+              background: C.panel, flexShrink: 0,
+            }}>
+              <label style={{ display: "flex", alignItems: "center", gap: 5, color: C.muted, fontSize: 11 }}>
+                <input type="checkbox" defaultChecked style={{ accentColor: C.accent }} /> Autoscroll
+              </label>
+              <label style={{ display: "flex", alignItems: "center", gap: 5, color: C.muted, fontSize: 11 }}>
+                <input type="checkbox" defaultChecked style={{ accentColor: C.accent }} /> Timestamps
+              </label>
+              <span style={{ marginLeft: "auto", fontSize: 10.5, color: C.muted, fontFamily: "JetBrains Mono, monospace" }}>
+                14 lines · tailing live <span style={{ color: C.info }}>●</span>
+              </span>
+            </div>
+          </div>
+
+          {/* Right sidebar */}
+          <RightSidebar />
+        </div>
+      </div>
+
+      {/* Status bar */}
+      <div style={{
+        position: "absolute", bottom: 0, left: 0, right: 0,
+        height: 22, background: C.status, borderTop: `1px solid ${C.border}`,
+        display: "flex", alignItems: "center", padding: "0 14px", gap: 16,
+        fontFamily: "JetBrains Mono, monospace", fontSize: 10.5, color: C.muted,
+        zIndex: 10,
+      }}>
+        <span>☁ prod-us-east-1 · us-east-1</span>
+        <span>·</span>
+        <span>interval: 3s</span>
+        <span style={{ marginLeft: "auto" }}>SimpleLog v2.1</span>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
