@@ -1,10 +1,13 @@
+"""cloudwatch.py — AWS CloudWatch Logs helpers for SimpleLog."""
+from __future__ import annotations
+
+import configparser
+import os
+
 import boto3
-from botocore.exceptions import ClientError
 
 
-def list_profiles():
-    import configparser
-    import os
+def list_profiles() -> list[str]:
     profiles: set[str] = set()
     for fpath, strip_prefix in [
         ("~/.aws/credentials", False),
@@ -44,7 +47,7 @@ def list_log_groups(client, prefix=""):
         paginator = client.get_paginator("describe_log_groups")
         for page in paginator.paginate(**kwargs):
             groups.extend(g["logGroupName"] for g in page["logGroups"])
-    except (ClientError, Exception) as e:
+    except Exception as e:
         raise RuntimeError(str(e))
     return sorted(groups)
 
@@ -67,7 +70,7 @@ def list_log_streams(client, log_group, prefix=""):
             streams.extend(s["logStreamName"] for s in page["logStreams"])
             if len(streams) >= 200:
                 break
-    except (ClientError, Exception) as e:
+    except Exception as e:
         raise RuntimeError(str(e))
     return streams
 
@@ -95,7 +98,7 @@ def fetch_events(client, log_group, log_stream=None, start_ms=None,
                 events.append((ev["timestamp"], ev["message"].rstrip()))
             if max_events is not None and len(events) >= max_events:
                 break
-    except (ClientError, Exception) as e:
+    except Exception as e:
         raise RuntimeError(str(e))
 
     return events

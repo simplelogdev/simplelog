@@ -1,3 +1,6 @@
+"""workers.py — QThread workers for all log sources in SimpleLog."""
+from __future__ import annotations
+
 import contextlib
 import json
 import os
@@ -6,7 +9,7 @@ import subprocess
 import sys
 import time
 import urllib.request
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from PyQt6.QtCore import QThread, pyqtSignal
 
@@ -21,7 +24,7 @@ import loki_utils
 import railway_utils
 import vercel_utils
 
-# ── Docker timestamp helper ──────────────────────────────────────────────────
+# ── Timestamp helpers ────────────────────────────────────────────────────────
 
 def _parse_docker_ts(line: str) -> tuple[int, str]:
     """Parse docker --timestamps output: 'RFC3339 message text'.
@@ -36,6 +39,23 @@ def _parse_docker_ts(line: str) -> tuple[int, str]:
         except (ValueError, IndexError):
             pass
     return int(time.time() * 1000), line
+
+
+def _parse_k8s_line(line: str, fallback_ms: int) -> tuple[int, str]:
+    """Strip a leading RFC3339 timestamp from kubectl --timestamps output."""
+    parts = line.split(" ", 1)
+    if len(parts) == 2:
+        try:
+            dt = datetime.fromisoformat(parts[0].replace("Z", "+00:00"))
+            return int(dt.timestamp() * 1000), parts[1]
+        except ValueError:
+            pass
+    return fallback_ms, line
+
+
+def _ts_ms_to_iso(ts_ms: int) -> str:
+    dt = datetime.fromtimestamp(ts_ms / 1000, tz=UTC)
+    return dt.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
 
 def _read_last_n_lines(path: str, n: int) -> tuple[list[str], int]:
@@ -556,7 +576,7 @@ class GCPWorker(QThread):
 
     def run(self) -> None:
         self.status.emit(f"Loading GCP logs for {self._project_id}…")
-        since = datetime.now(UTC) - __import__("datetime").timedelta(hours=self._lookback_h)
+        since = datetime.now(UTC) - timedelta(hours=self._lookback_h)
         try:
             events = gcp_utils.fetch_entries(self._client, self._make_filter(since))
             self._last_ts = (
@@ -751,10 +771,11 @@ class DatadogWorker(QThread):
                 self._base_url, self._query, from_iso, to_iso,
                 self._api_key, self._app_key,
             )
-            self._last_iso = events[-1][0] and datadog_utils.now_iso() or to_iso
             if events:
                 self._last_iso = _ts_ms_to_iso(events[-1][0])
                 self.new_lines.emit(events)
+            else:
+                self._last_iso = to_iso
             self.history_done.emit(len(events))
             self.status.emit(f"Datadog {site} — {len(events)} entries loaded")
         except RuntimeError as e:
@@ -779,11 +800,6 @@ class DatadogWorker(QThread):
                     self.status.emit(f"Datadog {site} — tailing…")
             except RuntimeError as e:
                 self.error.emit(str(e))
-
-
-def _ts_ms_to_iso(ts_ms: int) -> str:
-    dt = datetime.fromtimestamp(ts_ms / 1000, tz=UTC)
-    return dt.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
 
 # ── Elasticsearch / OpenSearch worker ────────────────────────────────────────
@@ -817,7 +833,7 @@ class ElasticWorker(QThread):
     def run(self) -> None:
         label = self._url.split("//", 1)[-1].split("/")[0]
         self.status.emit(f"Loading Elasticsearch logs from {label}…")
-        since = datetime.now(UTC) - __import__("datetime").timedelta(hours=self._lookback_h)
+        since = datetime.now(UTC) - timedelta(hours=self._lookback_h)
         since_iso = since.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
         try:
             events, last_sort = elastic_utils.fetch_logs(
@@ -1038,15 +1054,3 @@ class KubernetesWorker(QThread):
             err = (self._proc.stderr.read() or "").strip()  # type: ignore[union-attr]
             if err:
                 self.error.emit(err)
-
-
-def _parse_k8s_line(line: str, fallback_ms: int) -> tuple[int, str]:
-    """Try to strip a leading RFC3339 timestamp from kubectl --timestamps output."""
-    parts = line.split(" ", 1)
-    if len(parts) == 2:
-        try:
-            dt = datetime.fromisoformat(parts[0].replace("Z", "+00:00"))
-            return int(dt.timestamp() * 1000), parts[1]
-        except ValueError:
-            pass
-    return fallback_ms, line

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import shlex
+import stat
 
 import paramiko
 
@@ -63,7 +64,6 @@ def list_remote_dir_full(client: paramiko.SSHClient, path: str) -> list[tuple[st
 
     Raises RuntimeError if the path cannot be listed.
     """
-    import stat as stat_mod
     try:
         sftp = client.open_sftp()
         try:
@@ -74,7 +74,7 @@ def list_remote_dir_full(client: paramiko.SSHClient, path: str) -> list[tuple[st
         raise RuntimeError(f"Cannot list {path}: {e}") from e
     result = []
     for a in sorted(attrs, key=lambda x: x.filename):
-        is_dir = stat_mod.S_ISDIR(a.st_mode) if a.st_mode else False
+        is_dir = stat.S_ISDIR(a.st_mode) if a.st_mode else False
         result.append((a.filename, is_dir))
     return result
 

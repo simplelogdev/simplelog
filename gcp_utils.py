@@ -1,9 +1,7 @@
 """gcp_utils.py — Google Cloud Logging helpers for SimpleLog."""
 from __future__ import annotations
 
-from datetime import UTC, datetime
-
-_UTC = UTC
+from datetime import datetime
 
 # Common GCP resource types shown in the picker
 RESOURCE_TYPES = [

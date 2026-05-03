@@ -1,9 +1,7 @@
 """azure_utils.py — Azure Monitor Logs helpers for SimpleLog."""
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
-
-_UTC = UTC
+from datetime import datetime, timedelta
 
 # Common Log Analytics tables grouped by category
 TABLES: dict[str, list[str]] = {
