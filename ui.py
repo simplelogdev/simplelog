@@ -95,6 +95,7 @@ except ImportError:
     _HAS_SVG = False
 
 import azure_utils
+import cloudflare_utils
 import cloudwatch
 import datadog_utils
 import docker_utils
@@ -109,6 +110,7 @@ import ssh_utils
 import vercel_utils
 from workers import (
     AzureWorker,
+    CloudflareWorker,
     DatadogWorker,
     DockerComposeWorker,
     DockerContainerWorker,
@@ -232,6 +234,15 @@ _SVG_KUBERNETES = (
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">'
     '<path fill="{color}" d="M12 2l9 4.5v9L12 20l-9-4.5v-9L12 2zm0 2.18L5 7.64v8.72'
     'L12 19.82l7-3.46V7.64L12 4.18zm-1 3.32h2v5l-1 1-1-1V7.5zm0 7h2v2h-2v-2z"/>'
+    "</svg>"
+)
+
+_SVG_CLOUDFLARE = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">'
+    '<path fill="{color}" d="M18.92 10.36c-.28-3-2.79-5.36-5.89-5.36'
+    '-2.33 0-4.36 1.37-5.35 3.38-.44-.22-.93-.34-1.45-.34-1.79 0-3.23 1.45-3.23 3.24'
+    ' 0 .18.02.36.05.53C1.84 12.51 1 13.72 1 15.15 1 17.01 2.49 18.5 4.35 18.5h14.3'
+    'c1.86 0 3.35-1.49 3.35-3.35 0-1.77-1.38-3.22-3.13-3.33l.05-.46z"/>'
     "</svg>"
 )
 
@@ -5017,6 +5028,202 @@ class KubernetesPanel(QWidget):
         self.open_tab.emit(cfg, self._open_mode_k8s.get_mode())
 
 
+# ── CloudflarePanel ───────────────────────────────────────────────────────────
+
+class _CloudflareConnectWorker(QThread):
+    success = pyqtSignal(list)   # list[str] — worker script names
+    failure = pyqtSignal(str)
+
+    def __init__(self, api_token: str, account_id: str) -> None:
+        super().__init__()
+        self._api_token  = api_token
+        self._account_id = account_id
+
+    def run(self) -> None:
+        try:
+            workers = cloudflare_utils.list_workers(self._api_token, self._account_id)
+            self.success.emit(workers)
+        except RuntimeError as e:
+            self.failure.emit(str(e))
+
+
+class CloudflarePanel(QWidget):
+    open_tab = pyqtSignal(dict, str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._workers: list[str] = []
+        self._connect_worker: _CloudflareConnectWorker | None = None
+        self._build_ui()
+
+    def _build_ui(self) -> None:
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setStyleSheet("background: transparent; border: none;")
+        root.addWidget(scroll)
+
+        inner = QWidget()
+        inner.setStyleSheet(f"background: {C_PANEL};")
+        scroll.setWidget(inner)
+
+        vlay = QVBoxLayout(inner)
+        vlay.setContentsMargins(12, 12, 12, 12)
+        vlay.setSpacing(10)
+
+        field_style = (
+            f"background: {C_BG}; color: {C_TEXT}; border: 1px solid {C_BORDER};"
+            "border-radius: 4px; padding: 6px 8px; font-size: 12px;"
+        )
+        lbl_style  = f"color: {C_MUTED}; font-size: 11px;"
+        list_style = (
+            f"QListWidget {{ background: {C_BG}; color: {C_TEXT}; border: 1px solid {C_BORDER};"
+            " border-radius: 4px; font-size: 12px; }}"
+            f"QListWidget::item:selected {{ background: {C_SEL_BG}; }}"
+        )
+
+        # ── Saved configs ─────────────────────────────────────────────
+        saved_card, saved_lay, _ = make_card(i18n.tr("saved_configs"))
+        self._cf_profile_bar = _ProfileBar("cloudflare", wrapper=saved_card)
+        self._cf_profile_bar.profile_loaded.connect(self._load_cloudflare_profile)
+        saved_lay.addWidget(self._cf_profile_bar)
+        vlay.addWidget(saved_card)
+
+        # ── Auth card ─────────────────────────────────────────────────
+        card_auth, lay_auth, _ = make_card(i18n.tr("new_config"))
+
+        lay_auth.addWidget(self._lbl(lbl_style, i18n.tr("cf_field_token")))
+        self._cf_token_input = QLineEdit()
+        self._cf_token_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self._cf_token_input.setStyleSheet(field_style)
+        self._cf_token_input.setPlaceholderText("API token with Workers:Read and Tail:Read")
+        lay_auth.addWidget(self._cf_token_input)
+
+        hint = QLabel(i18n.tr("cf_token_hint"))
+        hint.setStyleSheet(f"color: {C_MUTED}; font-size: 10.5px; font-style: italic;")
+        lay_auth.addWidget(hint)
+
+        lay_auth.addWidget(self._lbl(lbl_style, i18n.tr("cf_field_account_id")))
+        self._cf_account_input = QLineEdit()
+        self._cf_account_input.setStyleSheet(field_style)
+        self._cf_account_input.setPlaceholderText("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")
+        lay_auth.addWidget(self._cf_account_input)
+
+        self._save_profile_btn_cf = _ghost_btn("Save as profile…")
+        self._save_profile_btn_cf.clicked.connect(self._on_save_cf_profile)
+        self._save_profile_btn_cf.setEnabled(False)
+        lay_auth.addWidget(self._save_profile_btn_cf)
+
+        self._connect_btn_cf = _primary_btn(i18n.tr("cf_connect"))
+        self._connect_btn_cf.clicked.connect(self._do_connect)
+        lay_auth.addWidget(self._connect_btn_cf)
+
+        self._conn_status_cf = QLabel("")
+        self._conn_status_cf.setStyleSheet(lbl_style)
+        self._conn_status_cf.setWordWrap(True)
+        lay_auth.addWidget(self._conn_status_cf)
+
+        vlay.addWidget(card_auth)
+
+        # ── Workers card ──────────────────────────────────────────────
+        card_wk, lay_wk, _ = make_card(i18n.tr("cf_card_workers"))
+
+        self._cf_worker_list = QListWidget()
+        self._cf_worker_list.setMaximumHeight(180)
+        self._cf_worker_list.setStyleSheet(list_style)
+        self._cf_worker_list.itemSelectionChanged.connect(
+            lambda: self._open_btn_cf.setEnabled(self._cf_worker_list.currentRow() >= 0)
+        )
+        lay_wk.addWidget(self._cf_worker_list)
+
+        self._open_mode_cf = OpenModeWidget()
+        lay_wk.addWidget(self._open_mode_cf)
+
+        self._open_btn_cf = _primary_btn(i18n.tr("cf_open"))
+        self._open_btn_cf.clicked.connect(self._on_open)
+        self._open_btn_cf.setEnabled(False)
+        lay_wk.addWidget(self._open_btn_cf)
+
+        self._card_wk = card_wk
+        card_wk.setVisible(False)
+        vlay.addWidget(card_wk)
+        vlay.addStretch()
+
+    @staticmethod
+    def _lbl(style: str, text: str) -> QLabel:
+        lbl = QLabel(text)
+        lbl.setStyleSheet(style)
+        return lbl
+
+    def _do_connect(self) -> None:
+        token      = self._cf_token_input.text().strip()
+        account_id = self._cf_account_input.text().strip()
+        if not token or not account_id:
+            self._conn_status_cf.setText(i18n.tr("cf_missing_fields"))
+            self._conn_status_cf.setStyleSheet(f"color: {C_ERR}; font-size: 11px;")
+            return
+        self._connect_btn_cf.setEnabled(False)
+        self._conn_status_cf.setText(i18n.tr("cf_connecting"))
+        self._conn_status_cf.setStyleSheet(f"color: {C_MUTED}; font-size: 11px;")
+        self._connect_worker = _CloudflareConnectWorker(token, account_id)
+        self._connect_worker.success.connect(self._on_connected_cf)
+        self._connect_worker.failure.connect(self._on_connect_fail_cf)
+        self._connect_worker.start()
+
+    def _on_connected_cf(self, workers: list) -> None:
+        self._workers = workers
+        self._conn_status_cf.setText(i18n.tr("cf_connected"))
+        self._conn_status_cf.setStyleSheet(f"color: {C_INFO}; font-size: 11px;")
+        self._connect_btn_cf.setEnabled(True)
+        self._save_profile_btn_cf.setEnabled(True)
+        self._cf_worker_list.clear()
+        if workers:
+            for name in workers:
+                self._cf_worker_list.addItem(name)
+            self._card_wk.setVisible(True)
+        else:
+            self._conn_status_cf.setText(i18n.tr("cf_no_workers"))
+
+    def _on_connect_fail_cf(self, msg: str) -> None:
+        self._conn_status_cf.setText(msg)
+        self._conn_status_cf.setStyleSheet(f"color: {C_ERR}; font-size: 11px;")
+        self._connect_btn_cf.setEnabled(True)
+
+    def _load_cloudflare_profile(self, p: dict) -> None:
+        self._cf_token_input.setText(p.get("api_token", ""))
+        self._cf_account_input.setText(p.get("account_id", ""))
+
+    def _on_save_cf_profile(self) -> None:
+        name, ok = QInputDialog.getText(self, "Save profile", "Profile name:", text="cloudflare")
+        if not ok or not name.strip():
+            return
+        profiles_store.upsert("cloudflare", name.strip(), {
+            "api_token":  self._cf_token_input.text().strip(),
+            "account_id": self._cf_account_input.text().strip(),
+        })
+        self._cf_profile_bar.reload()
+
+    def _on_open(self) -> None:
+        token      = self._cf_token_input.text().strip()
+        account_id = self._cf_account_input.text().strip()
+        item       = self._cf_worker_list.currentItem()
+        if not item:
+            return
+        script_name = item.text()
+        cfg = {
+            "type":        "cloudflare",
+            "api_token":   token,
+            "account_id":  account_id,
+            "script_name": script_name,
+            "label":       script_name,
+        }
+        self.open_tab.emit(cfg, self._open_mode_cf.get_mode())
+
+
 # ── Remote redesign: providers + AddConnectionDialog + RemoteHomePanel ────────
 
 RESULT_OPEN = 2  # custom dialog result: connect without saving
@@ -5033,7 +5240,8 @@ _REMOTE_PROVIDERS: list[tuple[str, str, str, str, str, str]] = [
     ("elastic",    "Elasticsearch",  "⊙",  "#f04e98", _SVG_ELASTIC,    "Elasticsearch / OpenSearch"),
     ("railway",    "Railway",        "▣",  "#b975f2", _SVG_RAILWAY,    "Railway deployment logs"),
     ("flyio",      "Fly.io",         "⬥",  "#7b3fc4", _SVG_FLYIO,      "Fly.io app logs"),
-    ("kubernetes", "Kubernetes",     "⎈",  "#326ce5", _SVG_KUBERNETES, "Kubernetes pod logs"),
+    ("kubernetes",  "Kubernetes",     "⎈",  "#326ce5", _SVG_KUBERNETES,  "Kubernetes pod logs"),
+    ("cloudflare",  "Cloudflare",     "⛅", "#f6821f", _SVG_CLOUDFLARE,  "Cloudflare Workers real-time logs"),
 ]
 
 _PROVIDER_FIELDS: dict[str, list[tuple[str, str, str, bool]]] = {
@@ -5105,6 +5313,11 @@ _PROVIDER_FIELDS: dict[str, list[tuple[str, str, str, bool]]] = {
         ("name",      "Connection name", "k8s-prod",            False),
         ("context",   "kubectl context", "(default context)",   False),
         ("namespace", "Namespace",       "default",             False),
+    ],
+    "cloudflare": [
+        ("name",       "Connection name", "cloudflare-prod",                 False),
+        ("api_token",  "API Token",       "",                                True),
+        ("account_id", "Account ID",      "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", False),
     ],
 }
 
@@ -5588,18 +5801,19 @@ class AddRemoteDialog(QDialog):
     tab_requested = pyqtSignal(dict, str)
 
     _PROVIDERS: list[tuple[str, str, str, str]] = [
-        ("cloudwatch", "CloudWatch",    _SVG_CLOUD,      C_ACCENT),
-        ("ssh",        "SSH",           _SVG_SSH,        C_TRACE),
-        ("docker",     "Docker",        _SVG_DOCKER,     C_TS),
-        ("vercel",     "Vercel",        _SVG_VERCEL,     C_ERR),
-        ("gcp",        "GCP",           _SVG_GCP,        C_INFO),
-        ("azure",      "Azure",         _SVG_AZURE,      C_ACCENT_DIM),
-        ("loki",       "Loki",          _SVG_LOKI,       "#f46800"),
-        ("datadog",    "Datadog",       _SVG_DATADOG,    "#632ca6"),
-        ("elastic",    "Elasticsearch", _SVG_ELASTIC,    "#f04e98"),
-        ("railway",    "Railway",       _SVG_RAILWAY,    "#b975f2"),
-        ("flyio",      "Fly.io",        _SVG_FLYIO,      "#7b3fc4"),
-        ("kubernetes", "Kubernetes",    _SVG_KUBERNETES, "#326ce5"),
+        ("cloudwatch",  "CloudWatch",    _SVG_CLOUD,       C_ACCENT),
+        ("ssh",         "SSH",           _SVG_SSH,         C_TRACE),
+        ("docker",      "Docker",        _SVG_DOCKER,      C_TS),
+        ("vercel",      "Vercel",        _SVG_VERCEL,      C_ERR),
+        ("gcp",         "GCP",           _SVG_GCP,         C_INFO),
+        ("azure",       "Azure",         _SVG_AZURE,       C_ACCENT_DIM),
+        ("loki",        "Loki",          _SVG_LOKI,        "#f46800"),
+        ("datadog",     "Datadog",       _SVG_DATADOG,     "#632ca6"),
+        ("elastic",     "Elasticsearch", _SVG_ELASTIC,     "#f04e98"),
+        ("railway",     "Railway",       _SVG_RAILWAY,     "#b975f2"),
+        ("flyio",       "Fly.io",        _SVG_FLYIO,       "#7b3fc4"),
+        ("kubernetes",  "Kubernetes",    _SVG_KUBERNETES,  "#326ce5"),
+        ("cloudflare",  "Cloudflare",    _SVG_CLOUDFLARE,  "#f6821f"),
     ]
 
     def __init__(self, parent=None,
@@ -5664,23 +5878,25 @@ class AddRemoteDialog(QDialog):
         self._stack.addWidget(self._build_picker_page())
 
         # Pages 1-12 — existing panels
-        self._cw_panel         = CloudWatchPanel()
-        self._ssh_panel        = SSHPanel()
-        self._docker_panel     = DockerPanel()
-        self._vercel_panel     = VercelPanel()
-        self._gcp_panel        = GCPPanel()
-        self._azure_panel      = AzurePanel()
-        self._loki_panel       = LokiPanel()
-        self._datadog_panel    = DatadogPanel()
-        self._elastic_panel    = ElasticPanel()
-        self._railway_panel    = RailwayPanel()
-        self._flyio_panel      = FlyioPanel()
-        self._kubernetes_panel = KubernetesPanel()
+        self._cw_panel          = CloudWatchPanel()
+        self._ssh_panel         = SSHPanel()
+        self._docker_panel      = DockerPanel()
+        self._vercel_panel      = VercelPanel()
+        self._gcp_panel         = GCPPanel()
+        self._azure_panel       = AzurePanel()
+        self._loki_panel        = LokiPanel()
+        self._datadog_panel     = DatadogPanel()
+        self._elastic_panel     = ElasticPanel()
+        self._railway_panel     = RailwayPanel()
+        self._flyio_panel       = FlyioPanel()
+        self._kubernetes_panel  = KubernetesPanel()
+        self._cloudflare_panel  = CloudflarePanel()
 
         for panel in (self._cw_panel, self._ssh_panel, self._docker_panel,
                       self._vercel_panel, self._gcp_panel, self._azure_panel,
                       self._loki_panel, self._datadog_panel, self._elastic_panel,
-                      self._railway_panel, self._flyio_panel, self._kubernetes_panel):
+                      self._railway_panel, self._flyio_panel, self._kubernetes_panel,
+                      self._cloudflare_panel):
             panel.open_tab.connect(self._on_panel_open_tab)
             self._stack.addWidget(panel)
 
@@ -5688,17 +5904,18 @@ class AddRemoteDialog(QDialog):
             svc: i + 1 for i, (svc, *_) in enumerate(self._PROVIDERS)
         }
         self._load_fns: dict[str, object] = {
-            "cloudwatch": self._cw_panel._load_cw_profile,
-            "ssh":        self._ssh_panel._load_ssh_profile,
-            "vercel":     self._vercel_panel._load_vercel_profile,
-            "gcp":        self._gcp_panel._load_gcp_profile,
-            "azure":      self._azure_panel._load_az_profile,
-            "loki":       self._loki_panel._load_loki_profile,
-            "datadog":    self._datadog_panel._load_datadog_profile,
-            "elastic":    self._elastic_panel._load_elastic_profile,
-            "railway":    self._railway_panel._load_railway_profile,
-            "flyio":      self._flyio_panel._load_flyio_profile,
-            "kubernetes": self._kubernetes_panel._load_k8s_profile,
+            "cloudwatch":  self._cw_panel._load_cw_profile,
+            "ssh":         self._ssh_panel._load_ssh_profile,
+            "vercel":      self._vercel_panel._load_vercel_profile,
+            "gcp":         self._gcp_panel._load_gcp_profile,
+            "azure":       self._azure_panel._load_az_profile,
+            "loki":        self._loki_panel._load_loki_profile,
+            "datadog":     self._datadog_panel._load_datadog_profile,
+            "elastic":     self._elastic_panel._load_elastic_profile,
+            "railway":     self._railway_panel._load_railway_profile,
+            "flyio":       self._flyio_panel._load_flyio_profile,
+            "kubernetes":  self._kubernetes_panel._load_k8s_profile,
+            "cloudflare":  self._cloudflare_panel._load_cloudflare_profile,
         }
 
         if prefill_service:
@@ -5805,6 +6022,7 @@ class RemoteHomePanel(QWidget):
     _PROVIDER_ORDER = [
         "cloudwatch", "gcp", "azure", "ssh", "docker", "vercel",
         "loki", "datadog", "elastic", "railway", "flyio", "kubernetes",
+        "cloudflare",
     ]
 
     def __init__(self, parent=None) -> None:
@@ -6127,6 +6345,7 @@ class RemoteHomePanel(QWidget):
             "ssh":        "host",
             "docker":     "host",
             "vercel":     "team",
+            "cloudflare": "account_id",
         }.get(svc, "")
         return profile.get(key, "")
 
@@ -6972,6 +7191,7 @@ _SOURCE_COLORS = {
     "railway":          "#b975f2",
     "flyio":            "#7b3fc4",
     "kubernetes":       "#326ce5",
+    "cloudflare":       "#f6821f",
 }
 
 
@@ -8506,6 +8726,7 @@ class MainWindow(QMainWindow):
             "railway":          self.open_railway_tab,
             "flyio":            self.open_flyio_tab,
             "kubernetes":       self.open_kubernetes_tab,
+            "cloudflare":       self.open_cloudflare_tab,
         }
         fn = dispatch.get(cfg.get("type", ""))
         if fn:
@@ -8987,6 +9208,17 @@ class MainWindow(QMainWindow):
         viewer.set_title(f"k8s  ›  {label}")
         viewer._ws_meta = {k: v for k, v in cfg.items()}
         viewer._ws_meta["type"] = "kubernetes"
+        self._add_tab(label, viewer, worker, split)
+
+    def open_cloudflare_tab(self, cfg: dict, split: str = "tab"):
+        label = cfg.get("label", cfg.get("script_name", "worker"))
+        worker = CloudflareWorker(
+            cfg["api_token"], cfg["account_id"], cfg["script_name"],
+        )
+        viewer = LogViewer(source_type="cloudflare")
+        viewer.set_title(f"cloudflare  ›  {label}")
+        viewer._ws_meta = {k: v for k, v in cfg.items() if k != "api_token"}
+        viewer._ws_meta["type"] = "cloudflare"
         self._add_tab(label, viewer, worker, split)
 
     # ── Internal tab management ───────────────────────────────────────────────

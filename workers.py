@@ -14,6 +14,7 @@ from datetime import UTC, datetime, timedelta
 from PyQt6.QtCore import QThread, pyqtSignal
 
 import azure_utils
+import cloudflare_utils
 import cloudwatch
 import datadog_utils
 import elastic_utils
@@ -1054,3 +1055,90 @@ class KubernetesWorker(QThread):
             err = (self._proc.stderr.read() or "").strip()  # type: ignore[union-attr]
             if err:
                 self.error.emit(err)
+
+
+# ── Cloudflare Workers tail worker ────────────────────────────────────────────
+
+class CloudflareWorker(QThread):
+    """Streams Cloudflare Workers tail events via WebSocket (no external deps)."""
+    new_lines    = pyqtSignal(list)  # [(ts_ms, message), ...]
+    status       = pyqtSignal(str)
+    error        = pyqtSignal(str)
+    history_done = pyqtSignal(int)
+
+    def __init__(self, api_token: str, account_id: str, script_name: str) -> None:
+        super().__init__()
+        self._api_token   = api_token
+        self._account_id  = account_id
+        self._script_name = script_name
+        self._stop        = False
+        self._ssock       = None
+        self._tail_id     = ""
+
+    def stop(self) -> None:
+        self._stop = True
+        if self._ssock is not None:
+            cloudflare_utils.ws_close(self._ssock)
+
+    def run(self) -> None:
+        label = self._script_name
+        self.status.emit(f"Creating Cloudflare tail for {label}…")
+        try:
+            tail = cloudflare_utils.create_tail(
+                self._api_token, self._account_id, self._script_name,
+            )
+            self._tail_id = tail["id"]
+            ws_url = tail["url"]
+        except RuntimeError as e:
+            self.error.emit(str(e))
+            return
+
+        self.history_done.emit(0)  # tail is live-only; no historical backfill
+
+        try:
+            self._ssock = cloudflare_utils.ws_connect(ws_url, self._api_token)
+        except Exception as e:
+            self._cleanup()
+            self.error.emit(f"WebSocket connect: {e}")
+            return
+
+        self.status.emit(f"Tailing {label} — waiting for requests…")
+
+        try:
+            while not self._stop:
+                try:
+                    opcode, data = cloudflare_utils.ws_recv_frame(self._ssock)
+                except TimeoutError:
+                    # Keep-alive: send a ping so the server doesn't drop the connection
+                    with contextlib.suppress(Exception):
+                        cloudflare_utils.ws_send_frame(self._ssock, 9)
+                    continue
+                except (EOFError, OSError):
+                    if not self._stop:
+                        self.error.emit("Cloudflare tail connection lost")
+                    break
+
+                if opcode == 8:   # close frame
+                    break
+                elif opcode == 9:  # ping → reply with pong
+                    with contextlib.suppress(Exception):
+                        cloudflare_utils.ws_send_frame(self._ssock, 10, data)
+                elif opcode in (1, 2):  # text or binary — tail event
+                    events = cloudflare_utils.parse_tail_event(data)
+                    if events:
+                        self.new_lines.emit(events)
+                        self.status.emit(f"Tailing {label} — live")
+        finally:
+            self._cleanup()
+
+    def _cleanup(self) -> None:
+        if self._ssock is not None:
+            cloudflare_utils.ws_close(self._ssock)
+            self._ssock = None
+        if self._tail_id:
+            with contextlib.suppress(Exception):
+                cloudflare_utils.delete_tail(
+                    self._api_token, self._account_id,
+                    self._script_name, self._tail_id,
+                )
+            self._tail_id = ""

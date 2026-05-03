@@ -21,7 +21,7 @@ dependencies = [
 simplelog = "main:main"
 
 [tool.setuptools]
-py-modules = ["main", "ui", "workers", "cloudwatch", "ssh_utils", "docker_utils", "vercel_utils", "gcp_utils", "azure_utils", "creds_store", "profiles_store", "i18n", "version"]
+py-modules = ["main", "ui", "workers", "cloudwatch", "cloudflare_utils", "ssh_utils", "docker_utils", "vercel_utils", "gcp_utils", "azure_utils", "creds_store", "profiles_store", "i18n", "version"]
 
 [tool.ruff]
 target-version = "py311"
